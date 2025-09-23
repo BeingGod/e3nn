@@ -1,10 +1,10 @@
+import paddle.nn.functional as F
 import pytest
 
-import torch
-
 from e3nn import o3
-from e3nn.util.jit import compile_mode
-from e3nn.util.test import assert_equivariant, assert_auto_jitable, assert_normalized, random_irreps
+from e3nn.util.test import assert_equivariant
+from e3nn.util.test import assert_normalized
+from e3nn.util.test import random_irreps
 
 
 def test_assert_equivariant() -> None:
@@ -20,26 +20,9 @@ def test_assert_equivariant() -> None:
         assert_equivariant(not_equivariant)
 
 
-def test_jit_trace() -> None:
-    @compile_mode("trace")
-    class NotTracable(torch.nn.Module):
-        def forward(self, param):
-            if param.shape[0] == 7:
-                return torch.ones(8)
-            else:
-                return torch.randn(8, 3)
-
-    not_tracable = NotTracable()
-    not_tracable.irreps_in = o3.Irreps("2x0e")
-    not_tracable.irreps_out = o3.Irreps("1x1o")
-    # TorchScript returns some weird exceptions...
-    with pytest.raises(Exception):
-        assert_auto_jitable(not_tracable)
-
-
 def test_bad_normalize() -> None:
     def not_normal(x1) -> float:
-        return 870.0 * x1.square().relu()
+        return 870.0 * F.relu(x1.square())
 
     not_normal.irreps_in = random_irreps(clean=True, allow_empty=False)
     not_normal.irreps_out = not_normal.irreps_in

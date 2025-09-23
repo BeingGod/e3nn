@@ -1,13 +1,11 @@
-import torch
+import paddle
+import paddle.nn.functional as F
 
-from e3nn.o3._irreps import Irreps
-from e3nn.o3._tensor_product._tensor_product import TensorProduct
-from e3nn.util.jit import compile_mode
+from e3nn import o3
 
 
-@compile_mode("trace")
-class Norm(torch.nn.Module):
-    r"""Norm of each irrep in a direct sum of irreps.
+class Norm(paddle.nn.Layer):
+    """Norm of each irrep in a direct sum of irreps.
 
     Parameters
     ----------
@@ -22,27 +20,23 @@ class Norm(torch.nn.Module):
     Compute the norms of 17 vectors.
 
     >>> norm = Norm("17x1o")
-    >>> norm(torch.randn(17 * 3)).shape
-    torch.Size([17])
+    >>> norm(paddle.randn([17 * 3])).shape
+    [17]
     """
 
     squared: bool
 
-    def __init__(self, irreps_in, squared: bool = False) -> None:
+    def __init__(self, irreps_in, squared: bool = False):
         super().__init__()
-
-        irreps_in = Irreps(irreps_in).simplify()
-        irreps_out = Irreps([(mul, "0e") for mul, _ in irreps_in])
-
+        irreps_in = o3.Irreps(irreps_in).simplify()
+        irreps_out = o3.Irreps([(mul, "0e") for mul, _ in irreps_in])
         instr = [(i, i, i, "uuu", False, ir.dim) for i, (mul, ir) in enumerate(irreps_in)]
-
-        self.tp = TensorProduct(irreps_in, irreps_in, irreps_out, instr, irrep_normalization="component")
-
+        self.tp = o3.TensorProduct(irreps_in, irreps_in, irreps_out, instr, irrep_normalization="component")
         self.irreps_in = irreps_in
         self.irreps_out = irreps_out.simplify()
         self.squared = squared
 
-    def __repr__(self) -> str:
+    def __repr__(self):
         return f"{self.__class__.__name__}({self.irreps_in})"
 
     def forward(self, features):
@@ -50,17 +44,16 @@ class Norm(torch.nn.Module):
 
         Parameters
         ----------
-        features : `torch.Tensor`
+        features : `paddle.Tensor`
             tensor of shape ``(..., irreps_in.dim)``
 
         Returns
         -------
-        `torch.Tensor`
+        `paddle.Tensor`
             tensor of shape ``(..., irreps_out.dim)``
         """
         out = self.tp(features, features)
         if self.squared:
             return out
         else:
-            # ReLU fixes gradients at zero
-            return out.relu().sqrt()
+            return F.relu(out).sqrt()

@@ -1,13 +1,13 @@
 from typing import Optional
 
-import torch
+import paddle
 
-from e3nn.o3._irreps import Irreps
-from e3nn.o3._reduce import ReducedTensorProducts
+from e3nn import o3
+from e3nn.util.paddle_utils import *  # noqa
 
 
-class CartesianTensor(Irreps):
-    r"""representation of a cartesian tensor into irreps
+class CartesianTensor(o3.Irreps):
+    """representation of a cartesian tensor into irreps
 
     Parameters
     ----------
@@ -16,116 +16,106 @@ class CartesianTensor(Irreps):
     Examples
     --------
 
-    >>> import torch
+    >>> import paddle
     >>> CartesianTensor("ij=-ji")
     1x1e
 
     >>> x = CartesianTensor("ijk=-jik=-ikj")
-    >>> x.from_cartesian(torch.ones(3, 3, 3))
-    tensor([0.])
+    >>> x.from_cartesian(paddle.ones([3, 3, 3]))
+    Tensor(shape=[1], dtype=float32, place=Place(gpu:0), stop_gradient=True,
+       [0.])
 
-    >>> x.from_vectors(torch.ones(3), torch.ones(3), torch.ones(3))
-    tensor([0.])
+    >>> x.from_vectors(paddle.ones(3), paddle.ones(3), paddle.ones(3))
+    Tensor(shape=[1], dtype=float32, place=Place(gpu:0), stop_gradient=True,
+       [0.])
 
     >>> x = CartesianTensor("ij=ji")
-    >>> t = torch.arange(9).to(torch.float).view(3,3)
+    >>> t = paddle.arange(9).astype(paddle.float32).view(3,3)
     >>> y = x.from_cartesian(t)
     >>> z = x.to_cartesian(y)
-    >>> torch.allclose(z, (t + t.T)/2, atol=1e-5)
+    >>> paddle.allclose(z, (t + t.T)/2, atol=1e-5)
     True
     """
 
-    # pylint: disable=abstract-method
-
-    # These are set in __new__
     formula: str
     indices: str
 
-    def __new__(
-        # pylint: disable=signature-differs
-        cls,
-        formula,
-    ):
+    def __new__(cls, formula):
         indices = formula.split("=")[0].replace("-", "")
-        rtp = ReducedTensorProducts(formula, **{i: "1o" for i in indices})
+        rtp = o3.ReducedTensorProducts(formula, **{i: "1o" for i in indices})
         ret = super().__new__(cls, rtp.irreps_out)
         ret.formula = formula
         ret.indices = indices
         return ret
 
     def from_cartesian(self, data, rtp=None):
-        r"""convert cartesian tensor into irreps
+        """convert cartesian tensor into irreps
 
         Parameters
         ----------
-        data : `torch.Tensor`
+        data : `paddle.Tensor`
             cartesian tensor of shape ``(..., 3, 3, 3, ...)``
 
         Returns
         -------
-        `torch.Tensor`
+        `paddle.Tensor`
             irreps tensor of shape ``(..., self.dim)``
         """
         if rtp is None:
             rtp = self.reduced_tensor_products(data)
-
         Q = rtp.change_of_basis.flatten(-len(self.indices))
-        return data.flatten(-len(self.indices)) @ Q.T
+        return data.flatten(start_axis=-len(self.indices)) @ Q.T
 
     def from_vectors(self, *xs, rtp=None):
-        r"""convert :math:`x_1 \otimes x_2 \otimes x_3 \otimes \dots`
+        """convert :math:`x_1 \\otimes x_2 \\otimes x_3 \\otimes \\dots`
 
         Parameters
         ----------
-        xs : list of `torch.Tensor`
+        xs : list of `paddle.Tensor`
             list of vectors of shape ``(..., 3)``
 
         Returns
         -------
-        `torch.Tensor`
+        `paddle.Tensor`
             irreps tensor of shape ``(..., self.dim)``
         """
         if rtp is None:
             rtp = self.reduced_tensor_products(xs[0])
-
-        return rtp(*xs)  # pylint: disable=not-callable
+        return rtp(*xs)
 
     def to_cartesian(self, data, rtp=None):
-        r"""convert irreps tensor to cartesian tensor
+        """convert irreps tensor to cartesian tensor
 
         This is the symmetry-aware inverse operation of ``from_cartesian()``.
 
         Parameters
         ----------
-        data : `torch.Tensor`
+        data : `paddle.Tensor`
             irreps tensor of shape ``(..., D)``, where D is the dimension of the irreps,
             i.e. ``D=self.dim``.
 
         Returns
         -------
-        `torch.Tensor`
+        `paddle.Tensor`
             cartesian tensor of shape ``(..., 3, 3, 3, ...)``
         """
         if rtp is None:
             rtp = self.reduced_tensor_products(data)
-
         Q = rtp.change_of_basis
-        cartesian_tensor = data @ Q.flatten(-len(self.indices))
-
-        shape = list(data.shape[:-1]) + list(Q.shape[1:])
+        cartesian_tensor = data @ Q.flatten(start_axis=-len(self.indices))
+        shape = list(tuple(data.shape)[:-1]) + list(tuple(Q.shape)[1:])
         cartesian_tensor = cartesian_tensor.view(shape)
-
         return cartesian_tensor
 
-    def reduced_tensor_products(self, data: Optional[torch.Tensor] = None) -> ReducedTensorProducts:
-        r"""reduced tensor products
+    def reduced_tensor_products(self, data: Optional[paddle.Tensor] = None) -> o3.ReducedTensorProducts:
+        """reduced tensor products
 
         Returns
         -------
         `e3nn.ReducedTensorProducts`
             reduced tensor products
         """
-        rtp = ReducedTensorProducts(self.formula, **{i: "1o" for i in self.indices})
+        rtp = o3.ReducedTensorProducts(self.formula, **{i: "1o" for i in self.indices})
         if data is not None:
-            rtp = rtp.to(device=data.device, dtype=data.dtype)
+            rtp = rtp.to(device=str(data.place)[6:-1], dtype=data.dtype)
         return rtp

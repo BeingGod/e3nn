@@ -1,12 +1,11 @@
-import torch
-from torch import nn
+import paddle
+from paddle import nn
 
 from e3nn import o3
-from e3nn.util.jit import compile_mode
+from e3nn.util.paddle_utils import *  # noqa
 
 
-@compile_mode("unsupported")
-class BatchNorm(nn.Module):
+class BatchNorm(nn.Layer):
     """Batch normalization for orthonormal representations
 
     It normalizes by the norm of the representations.
@@ -70,17 +69,15 @@ class BatchNorm(nn.Module):
             self.register_buffer("running_mean", None)
             self.register_buffer("running_var", None)
         else:
-            self.register_buffer("running_mean", torch.zeros(num_scalar))
-            self.register_buffer("running_var", torch.ones(num_features))
+            self.register_buffer("running_mean", paddle.zeros(num_scalar))
+            self.register_buffer("running_var", paddle.ones(num_features))
 
         if affine:
-            self.weight = nn.Parameter(torch.ones(num_features))
-            if self.include_bias:
-                self.bias = nn.Parameter(torch.zeros(num_scalar))
+            self.weight = paddle.base.framework.EagerParamBase.from_tensor(tensor=paddle.ones(shape=num_features))
+            self.bias = paddle.base.framework.EagerParamBase.from_tensor(tensor=paddle.zeros(shape=num_scalar))
         else:
-            self.register_parameter("weight", None)
-            if self.include_bias:
-                self.register_parameter("bias", None)
+            self.add_parameter(name="weight", parameter=None)
+            self.add_parameter(name="bias", parameter=None)
 
         assert isinstance(reduce, str), "reduce should be passed as a string value"
         assert reduce in ["mean", "max"], "reduce needs to be 'mean' or 'max'"
@@ -99,17 +96,17 @@ class BatchNorm(nn.Module):
     def _roll_avg(self, curr, update) -> float:
         return (1 - self.momentum) * curr + self.momentum * update.detach()
 
-    def forward(self, input) -> torch.Tensor:
+    def forward(self, input) -> paddle.Tensor:
         """evaluate
 
         Parameters
         ----------
-        input : `torch.Tensor`
+        input : `paddle.Tensor`
             tensor of shape ``(batch, ..., irreps.dim)``
 
         Returns
         -------
-        `torch.Tensor`
+        `paddle.Tensor`
             tensor of shape ``(batch, ..., irreps.dim)``
         """
         orig_shape = input.shape
@@ -148,7 +145,6 @@ class BatchNorm(nn.Module):
 
                 # [batch, sample, mul, repr]
                 field = field - field_mean.reshape(-1, 1, mul, 1)
-
             if self.training or self.instance:
                 if self.normalization == "norm":
                     field_norm = field.pow(2).sum(3)  # [batch, sample, mul]
@@ -160,7 +156,7 @@ class BatchNorm(nn.Module):
                 if self.reduce == "mean":
                     field_norm = field_norm.mean(1)  # [batch, mul]
                 elif self.reduce == "max":
-                    field_norm = field_norm.max(1).values  # [batch, mul]
+                    field_norm = field_norm.max(1)  # [batch, mul]
                 else:
                     raise ValueError(f"Invalid reduce option {self.reduce}")
 
@@ -188,21 +184,21 @@ class BatchNorm(nn.Module):
 
             fields.append(field.reshape(batch, -1, mul * d))  # [batch, sample, mul * repr]
 
-        torch._assert(ix == dim, f"`ix` should have reached input.size(-1) ({dim}), but it ended at {ix}")
+        assert ix == dim, f"`ix` should have reached input.size(-1) ({dim}), but it ended at {ix}"
 
         if self.training and not self.instance:
-            torch._assert(irm == self.running_mean.numel(), "irm == self.running_mean.numel()")
-            torch._assert(irv == self.running_var.size(0), "irv == self.running_var.size(0)")
+            assert irm == self.running_mean.numel(), "irm == self.running_mean.numel()"
+            assert irv == self.running_var.shape[0], "irv == self.running_var.shape[0]"
         if self.affine:
-            torch._assert(iw == self.weight.size(0), "iw == self.weight.size(0)")
+            assert iw == self.weight.shape[0], "iw == self.weight.shape[0]"
             if self.include_bias:
-                torch._assert(ib == self.bias.numel(), "ib == self.bias.numel()")
+                assert ib == self.bias.numel(), "ib == self.bias.numel()"
 
         if self.training and not self.instance:
             if len(new_means) > 0:
-                torch.cat(new_means, out=self.running_mean)
+                paddle.assign(paddle.concat(new_means), self.running_mean)
             if len(new_vars) > 0:
-                torch.cat(new_vars, out=self.running_var)
+                paddle.assign(paddle.concat(new_vars), self.running_var)
 
-        output = torch.cat(fields, dim=2)  # [batch, sample, stacked features]
+        output = paddle.concat(fields, axis=2)  # [batch, sample, stacked features]
         return output.reshape(orig_shape)

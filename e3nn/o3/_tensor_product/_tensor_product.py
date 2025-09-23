@@ -1,18 +1,21 @@
-from math import sqrt
-from typing import List, Optional, Union, Any, Callable
 import warnings
+from math import sqrt
+from typing import Any
+from typing import Callable
+from typing import List
+from typing import Optional
+from typing import Union
 
-import torch
-from torch import fx
+import paddle
 
 import e3nn
 from e3nn.o3._irreps import Irreps
 from e3nn.util import prod
 from e3nn.util.codegen import CodeGenMixin
-from e3nn.util.jit import compile_mode
-from ._codegen import codegen_tensor_product_left_right, codegen_tensor_product_right
-from ._instruction import Instruction
 
+from ._codegen import codegen_tensor_product_left_right
+from ._codegen import codegen_tensor_product_right
+from ._instruction import Instruction
 
 # A list, in order of priority, of codegen providers for the tensor product.
 # If a provider does not support the parameters it is given, it should
@@ -21,8 +24,7 @@ _CODEGEN_PROVIDERS_LEFT_RIGHT: List[Callable] = [codegen_tensor_product_left_rig
 _CODEGEN_PROVIDERS_RIGHT: List[Callable] = [codegen_tensor_product_right]
 
 
-@compile_mode("script")
-class TensorProduct(CodeGenMixin, torch.nn.Module):
+class TensorProduct(CodeGenMixin, paddle.nn.Layer):
     r"""Tensor product with parametrized paths.
 
     Parameters
@@ -167,12 +169,12 @@ class TensorProduct(CodeGenMixin, torch.nn.Module):
     ...         if ir_out in ir_1 * ir_2
     ...     ]
     ... )
-    >>> with torch.no_grad():
+    >>> with paddle.no_grad():
     ...     for weight in module.weight_views():
     ...         mul_1, mul_2, mul_out = weight.shape
-    ...         # formula from torch.nn.init.xavier_uniform_
+    ...         # formula from paddle.nn.init.xavier_uniform_
     ...         a = (6 / (mul_1 * mul_2 + mul_out))**0.5
-    ...         new_weight = torch.empty_like(weight)
+    ...         new_weight = paddle.empty_like(weight)
     ...         new_weight.uniform_(-a, a)
     ...         weight[:] = new_weight
     tensor(...)
@@ -199,14 +201,14 @@ class TensorProduct(CodeGenMixin, torch.nn.Module):
         irreps_in2: Irreps,
         irreps_out: Irreps,
         instructions: List[tuple],
-        in1_var: Optional[Union[List[float], torch.Tensor]] = None,
-        in2_var: Optional[Union[List[float], torch.Tensor]] = None,
-        out_var: Optional[Union[List[float], torch.Tensor]] = None,
+        in1_var: Optional[Union[List[float], paddle.Tensor]] = None,
+        in2_var: Optional[Union[List[float], paddle.Tensor]] = None,
+        out_var: Optional[Union[List[float], paddle.Tensor]] = None,
         irrep_normalization: str = None,
         path_normalization: str = None,
         internal_weights: Optional[bool] = None,
         shared_weights: Optional[bool] = None,
-        compile_left_right: bool = True,
+        compile_left_right: bool = False,
         compile_right: bool = False,
         normalization=None,  # for backward compatibility
         _specialized_code: Optional[bool] = None,
@@ -346,55 +348,39 @@ class TensorProduct(CodeGenMixin, torch.nn.Module):
 
         # Generate the actual tensor product code
         if compile_left_right:
-            for codegen in _CODEGEN_PROVIDERS_LEFT_RIGHT:
-                graphmod_left_right = codegen(
-                    self.irreps_in1,
-                    self.irreps_in2,
-                    self.irreps_out,
-                    self.instructions,
-                    self.shared_weights,
-                    self._specialized_code,
-                    self._optimize_einsums,
-                )
-                if graphmod_left_right is not None:
-                    break
-            assert graphmod_left_right is not None
-        else:
-            graphmod_left_right = fx.Graph()
-            graphmod_left_right.placeholder("x1", torch.Tensor)
-            graphmod_left_right.placeholder("x2", torch.Tensor)
-            graphmod_left_right.placeholder("w", torch.Tensor)
-            graphmod_left_right.call_function(
-                torch._assert,
-                args=(
-                    False,
-                    "`left_right` method is not compiled, set `compile_left_right` to True when creating the TensorProduct",
-                ),
+            warnings.warn("`compile_left_right` will not work because paddle not support compile.")
+
+        for codegen in _CODEGEN_PROVIDERS_LEFT_RIGHT:
+            graphmod_left_right = codegen(
+                self.irreps_in1,
+                self.irreps_in2,
+                self.irreps_out,
+                self.instructions,
+                self.shared_weights,
+                self._specialized_code,
+                self._optimize_einsums,
             )
-            graphmod_left_right = fx.GraphModule(torch.nn.Module(), graphmod_left_right, class_name="tp_forward")
+            if graphmod_left_right is not None:
+                break
+        assert graphmod_left_right is not None
 
         if compile_right:
-            for codegen in _CODEGEN_PROVIDERS_RIGHT:
-                graphmod_right = codegen(
-                    self.irreps_in1,
-                    self.irreps_in2,
-                    self.irreps_out,
-                    self.instructions,
-                    self.shared_weights,
-                    self._specialized_code,
-                    self._optimize_einsums,
-                )
-                if graphmod_right is not None:
-                    break
-            assert graphmod_right is not None
-        else:
-            graphmod_right = fx.Graph()
-            tmp = graphmod_right.placeholder("x2", torch.Tensor)
-            # Make a dummy no-op graph, it can't be empty or causes IndentationError on unpickle
-            graphmod_right.placeholder("w", torch.Tensor)
-            graphmod_right.output(tmp)
-            del tmp
-            graphmod_right = fx.GraphModule(torch.nn.Module(), graphmod_right, class_name="tp_forward")
+            warnings.warn("`compile_right` will not work because paddle not support compile.")
+
+        for codegen in _CODEGEN_PROVIDERS_RIGHT:
+            graphmod_right = codegen(
+                self.irreps_in1,
+                self.irreps_in2,
+                self.irreps_out,
+                self.instructions,
+                self.shared_weights,
+                self._specialized_code,
+                self._optimize_einsums,
+            )
+            if graphmod_right is not None:
+                break
+        assert graphmod_right is not None
+
         self._did_compile_right = compile_right
 
         self._codegen_register({"_compiled_main_left_right": graphmod_left_right, "_compiled_main_right": graphmod_right})
@@ -404,30 +390,29 @@ class TensorProduct(CodeGenMixin, torch.nn.Module):
 
         if internal_weights and self.weight_numel > 0:
             assert self.shared_weights, "Having internal weights impose shared weights"
-            self.weight = torch.nn.Parameter(torch.randn(self.weight_numel))
+            self.weight = paddle.base.framework.EagerParamBase.from_tensor(paddle.randn([self.weight_numel]))
         else:
-            # For TorchScript, there always has to be some kind of defined .weight
-            self.register_buffer("weight", torch.Tensor())
+            # For paddleScript, there always has to be some kind of defined .weight
+            self.register_buffer("weight", paddle.empty(()))
 
         if self.irreps_out.dim > 0:
-            output_mask = torch.cat(
+            output_mask = paddle.concat(
                 [
                     (
-                        torch.ones(mul * ir.dim)
+                        paddle.ones([mul * ir.dim])
                         if any(
                             (ins.i_out == i_out) and (ins.path_weight != 0) and (0 not in ins.path_shape)
                             for ins in self.instructions
                         )
-                        else torch.zeros(mul * ir.dim)
+                        else paddle.zeros([mul * ir.dim])
                     )
                     for i_out, (mul, ir) in enumerate(self.irreps_out)
                 ]
             )
         else:
-            output_mask = torch.ones(0)
+            output_mask = paddle.ones([0])
         self.register_buffer("output_mask", output_mask)
 
-        # For TorchScript, this needs to be done in advance:
         self._profiling_str = str(self)
 
     def __repr__(self) -> str:
@@ -438,37 +423,32 @@ class TensorProduct(CodeGenMixin, torch.nn.Module):
             f"-> {self.irreps_out.simplify()} | {npath} paths | {self.weight_numel} weights)"
         )
 
-    @torch.jit.unused
-    def _prep_weights_python(self, weight: Optional[Union[torch.Tensor, List[torch.Tensor]]]) -> Optional[torch.Tensor]:
+    def _prep_weights_python(self, weight: Optional[Union[paddle.Tensor, List[paddle.Tensor]]]) -> Optional[paddle.Tensor]:
         if isinstance(weight, list):
             weight_shapes = [ins.path_shape for ins in self.instructions if ins.has_weight]
             if not self.shared_weights:
                 weight = [w.reshape(-1, prod(shape)) for w, shape in zip(weight, weight_shapes)]
             else:
                 weight = [w.reshape(prod(shape)) for w, shape in zip(weight, weight_shapes)]
-            return torch.cat(weight, dim=-1)
+            return paddle.concat(weight, axis=-1)
         else:
             return weight
 
-    def _get_weights(self, weight: Optional[torch.Tensor]) -> torch.Tensor:
-        if not torch.jit.is_scripting():
-            # If we're not scripting, then we're in Python and `weight` could be a List[Tensor]
-            # deal with that:
-            weight = self._prep_weights_python(weight)
+    def _get_weights(self, weight: Optional[paddle.Tensor]) -> paddle.Tensor:
+        weight = self._prep_weights_python(weight)
         if weight is None:
             if self.weight_numel > 0 and not self.internal_weights:
                 raise RuntimeError("Weights must be provided when the TensorProduct does not have `internal_weights`")
             return self.weight
         else:
             if self.shared_weights:
-                torch._assert(weight.shape == (self.weight_numel,), "Invalid weight shape")
+                assert tuple(weight.shape) == (self.weight_numel,), "Invalid weight shape"
             else:
-                torch._assert(weight.shape[-1] == self.weight_numel, "Invalid weight shape")
-                torch._assert(weight.ndim > 1, "When shared weights is false, weights must have batch dimension")
+                assert weight.shape[-1] == self.weight_numel, "Invalid weight shape"
+                assert weight.ndim > 1, "When shared weights is false, weights must have batch dimension"
         return weight
 
-    @torch.jit.export
-    def right(self, y, weight: Optional[torch.Tensor] = None):
+    def right(self, y, weight: Optional[paddle.Tensor] = None):
         r"""Partially evaluate :math:`w x \otimes y`.
 
         It returns an operator in the form of a tensor that can act on an arbitrary :math:`x`.
@@ -493,14 +473,14 @@ class TensorProduct(CodeGenMixin, torch.nn.Module):
 
         .. code-block:: python
 
-            torch.einsum("...ik,...i->...k", right, input)
+            paddle.einsum("...ik,...i->...k", right, input)
 
         Parameters
         ----------
-        y : `torch.Tensor`
+        y : `paddle.Tensor`
             tensor of shape ``(..., irreps_in2.dim)``
 
-        weight : `torch.Tensor` or list of `torch.Tensor`, optional
+        weight : `paddle.Tensor` or list of `paddle.Tensor`, optional
             required if ``internal_weights`` is ``False``
             tensor of shape ``(self.weight_numel,)`` if ``shared_weights`` is ``True``
             tensor of shape ``(..., self.weight_numel)`` if ``shared_weights`` is ``False``
@@ -509,31 +489,31 @@ class TensorProduct(CodeGenMixin, torch.nn.Module):
 
         Returns
         -------
-        `torch.Tensor`
+        `paddle.Tensor`
             tensor of shape ``(..., irreps_in1.dim, irreps_out.dim)``
         """
-        torch._assert(
-            self._did_compile_right,
-            "`right` method is not compiled, set `compile_right` to True when creating the TensorProduct",
-        )
-        torch._assert(y.shape[-1] == self._in2_dim, "Incorrect last dimension for y")
+        assert (
+            self._did_compile_right
+        ), "`right` method is not compiled, set `compile_right` to True when creating the TensorProduct"
 
-        # - PROFILER - with torch.autograd.profiler.record_function(self._profiling_str):
+        assert y.shape[-1] == self._in2_dim, "Incorrect last dimension for y"
+
+        # - PROFILER - with paddle.autograd.profiler.record_function(self._profiling_str):
         real_weight = self._get_weights(weight)
         return self._compiled_main_right(y, real_weight)
 
-    def forward(self, x, y, weight: Optional[torch.Tensor] = None):
+    def forward(self, x, y, weight: Optional[paddle.Tensor] = None):
         r"""Evaluate :math:`w x \otimes y`.
 
         Parameters
         ----------
-        x : `torch.Tensor`
+        x : `paddle.Tensor`
             tensor of shape ``(..., irreps_in1.dim)``
 
-        y : `torch.Tensor`
+        y : `paddle.Tensor`
             tensor of shape ``(..., irreps_in2.dim)``
 
-        weight : `torch.Tensor` or list of `torch.Tensor`, optional
+        weight : `paddle.Tensor` or list of `paddle.Tensor`, optional
             required if ``internal_weights`` is ``False``
             tensor of shape ``(self.weight_numel,)`` if ``shared_weights`` is ``True``
             tensor of shape ``(..., self.weight_numel)`` if ``shared_weights`` is ``False``
@@ -542,18 +522,18 @@ class TensorProduct(CodeGenMixin, torch.nn.Module):
 
         Returns
         -------
-        `torch.Tensor`
+        `paddle.Tensor`
             tensor of shape ``(..., irreps_out.dim)``
         """
 
-        torch._assert(x.shape[-1] == self._in1_dim, "Incorrect last dimension for x")
-        torch._assert(y.shape[-1] == self._in2_dim, "Incorrect last dimension for y")
+        assert x.shape[-1] == self._in1_dim, "Incorrect last dimension for x"
+        assert y.shape[-1] == self._in2_dim, "Incorrect last dimension for y"
 
-        # - PROFILER - with torch.autograd.profiler.record_function(self._profiling_str):
+        # - PROFILER - with paddle.autograd.profiler.record_function(self._profiling_str):
         real_weight = self._get_weights(weight)
         return self._compiled_main_left_right(x, y, real_weight)
 
-    def weight_view_for_instruction(self, instruction: int, weight: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def weight_view_for_instruction(self, instruction: int, weight: Optional[paddle.Tensor] = None) -> paddle.Tensor:
         r"""View of weights corresponding to ``instruction``.
 
         Parameters
@@ -562,12 +542,12 @@ class TensorProduct(CodeGenMixin, torch.nn.Module):
             The index of the instruction to get a view on the weights for. ``self.instructions[instruction].has_weight`` must
             be ``True``.
 
-        weight : `torch.Tensor`, optional
+        weight : `paddle.Tensor`, optional
             like ``weight`` argument to ``forward()``
 
         Returns
         -------
-        `torch.Tensor`
+        `paddle.Tensor`
             A view on ``weight`` or this object's internal weights for the weights corresponding to the ``instruction`` th
             instruction.
         """
@@ -577,14 +557,15 @@ class TensorProduct(CodeGenMixin, torch.nn.Module):
         ins = self.instructions[instruction]
         weight = self._get_weights(weight)
         batchshape = weight.shape[:-1]
-        return weight.narrow(-1, offset, prod(ins.path_shape)).view(batchshape + ins.path_shape)
+        start_0 = weight.shape[-1] + offset if offset < 0 else offset
+        return paddle.slice(weight, [-1], [start_0], [start_0 + prod(ins.path_shape)]).view(tuple(batchshape) + ins.path_shape)
 
-    def weight_views(self, weight: Optional[torch.Tensor] = None, yield_instruction: bool = False):
+    def weight_views(self, weight: Optional[paddle.Tensor] = None, yield_instruction: bool = False):
         r"""Iterator over weight views for each weighted instruction.
 
         Parameters
         ----------
-        weight : `torch.Tensor`, optional
+        weight : `paddle.Tensor`, optional
             like ``weight`` argument to ``forward()``
 
         yield_instruction : `bool`, default False
@@ -601,7 +582,10 @@ class TensorProduct(CodeGenMixin, torch.nn.Module):
         for ins_i, ins in enumerate(self.instructions):
             if ins.has_weight:
                 flatsize = prod(ins.path_shape)
-                this_weight = weight.narrow(-1, offset, flatsize).view(batchshape + ins.path_shape)
+                start_1 = weight.shape[-1] + offset if offset < 0 else offset
+                this_weight = paddle.slice(weight, [-1], [start_1], [start_1 + flatsize]).view(
+                    tuple(batchshape) + ins.path_shape
+                )
                 offset += flatsize
                 if yield_instruction:
                     yield ins_i, ins, this_weight
@@ -609,13 +593,13 @@ class TensorProduct(CodeGenMixin, torch.nn.Module):
                     yield this_weight
 
     def visualize(
-        self, weight: Optional[torch.Tensor] = None, plot_weight: bool = True, aspect_ratio=1, ax=None
+        self, weight: Optional[paddle.Tensor] = None, plot_weight: bool = True, aspect_ratio=1, ax=None
     ):  # pragma: no cover
         r"""Visualize the connectivity of this `e3nn.o3.TensorProduct`
 
         Parameters
         ----------
-        weight : `torch.Tensor`, optional
+        weight : `paddle.Tensor`, optional
             like ``weight`` argument to ``forward()``
 
         plot_weight : `bool`, default True
@@ -706,7 +690,7 @@ class TensorProduct(CodeGenMixin, torch.nn.Module):
         if weight is None and not self.internal_weights:
             plot_weight = False
         elif plot_weight:
-            with torch.no_grad():
+            with paddle.no_grad():
                 path_weight = []
                 for ins_i, ins in enumerate(self.instructions):
                     if ins.has_weight:

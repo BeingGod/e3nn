@@ -1,7 +1,8 @@
 import math
 
+import paddle
 import pytest
-import torch
+
 from e3nn.math import perm
 
 
@@ -59,37 +60,37 @@ def test_sign() -> None:
 def test_standard_representation(float_tolerance, n) -> None:
     # identity
     e = perm.standard_representation(perm.identity(n))
-    assert torch.allclose(e, torch.eye(n - 1), atol=float_tolerance)
+    assert paddle.allclose(e, paddle.eye(n - 1), atol=float_tolerance)
 
     # inverse
     p = perm.rand(n)
     a = perm.standard_representation(p)
     b = perm.standard_representation(perm.inverse(p))
-    assert torch.allclose(a, torch.inverse(b), atol=float_tolerance)
+    assert paddle.allclose(a, paddle.inverse(b), atol=float_tolerance)
 
     # compose
     p1, p2 = perm.rand(n), perm.rand(n)
     a = perm.standard_representation(p1) @ perm.standard_representation(p2)
     b = perm.standard_representation(perm.compose(p1, p2))
-    assert torch.allclose(a, b, atol=float_tolerance)
+    assert paddle.allclose(a, b, atol=float_tolerance)
 
     # orthogonal
     a = perm.standard_representation(perm.rand(n))
-    assert torch.allclose(a @ a.T, torch.eye(n - 1), atol=float_tolerance)
+    assert paddle.allclose(a @ a.T, paddle.eye(n - 1), atol=float_tolerance)
 
 
 @pytest.mark.parametrize("n", [3, 7, 15])
 def test_natural_representation(float_tolerance, n) -> None:
     p = perm.rand(n)
-    a = torch.eye(n)[list(perm.inverse(p))]
+    a = paddle.eye(n)[list(perm.inverse(p))]
     b = perm.natural_representation(p)
-    assert torch.allclose(a, b, atol=float_tolerance)
+    assert paddle.allclose(a, b, atol=float_tolerance)
 
     p = perm.rand(n)
-    a = torch.eye(n)[:, list(p)]
+    a = paddle.eye(n)[:, list(p)]
     b = perm.natural_representation(p)
-    assert torch.allclose(a, b, atol=float_tolerance)
+    assert paddle.allclose(a, b, atol=float_tolerance)
 
     # orthogonal
     a = perm.natural_representation(perm.rand(n))
-    assert torch.allclose(a @ a.T, torch.eye(n), atol=float_tolerance)
+    assert paddle.allclose(a @ a.T, paddle.eye(n), atol=float_tolerance)

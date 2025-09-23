@@ -2,10 +2,11 @@
 
 import argparse
 import gzip
+import os
 import pickle
 
 import numpy as np
-from torchvision import datasets
+import paddle
 
 from e3nn.o3 import s2_grid
 
@@ -170,9 +171,7 @@ def main() -> None:
     parser.add_argument("--bandwidth", help="the bandwidth of the S2 signal", type=int, default=30, required=False)
     parser.add_argument("--noise", help="the rotational noise applied on the sphere", type=float, default=1.0, required=False)
     parser.add_argument("--chunk_size", help="size of image chunk with same rotation", type=int, default=500, required=False)
-    parser.add_argument(
-        "--mnist_data_folder", help="folder for saving the mnist data", type=str, default="MNIST_data", required=False
-    )
+    parser.add_argument("--mnist_data_folder", help="folder for saving the mnist data", type=str, default=None, required=False)
     parser.add_argument(
         "--output_file", help="file for saving the data output (.gz file)", type=str, default="s2_mnist.gz", required=False
     )
@@ -182,14 +181,33 @@ def main() -> None:
     args = parser.parse_args()
 
     print("getting mnist data")
-    trainset = datasets.MNIST(root=args.mnist_data_folder, train=True, download=True)
-    testset = datasets.MNIST(root=args.mnist_data_folder, train=False, download=True)
+    trainset = paddle.vision.datasets.MNIST(
+        download=True,
+        mode="train",
+        image_path=os.path.join(args.mnist_data_folder, "raw/train-images-idx3-ubyte.gz")
+        if args.mnist_data_folder is not None
+        else None,
+        label_path=os.path.join(args.mnist_data_folder, "raw/train-labels-idx1-ubyte.gz")
+        if args.mnist_data_folder is not None
+        else None,
+    )
+    testset = paddle.vision.datasets.MNIST(
+        download=True,
+        mode="test",
+        image_path=os.path.join(args.mnist_data_folder, "raw/t10k-images-idx3-ubyte.gz")
+        if args.mnist_data_folder is not None
+        else None,
+        label_path=os.path.join(args.mnist_data_folder, "raw/t10k-labels-idx1-ubyte.gz")
+        if args.mnist_data_folder is not None
+        else None,
+    )
+    testset = paddle.vision.datasets.MNIST()
     mnist_train = {}
-    mnist_train["images"] = trainset.data.numpy()
-    mnist_train["labels"] = trainset.targets.numpy()
+    mnist_train["images"] = np.array(trainset.images)
+    mnist_train["labels"] = np.array(trainset.labels)
     mnist_test = {}
-    mnist_test["images"] = testset.data.numpy()
-    mnist_test["labels"] = testset.targets.numpy()
+    mnist_test["images"] = np.array(testset.images)
+    mnist_test["labels"] = np.array(testset.labels)
 
     grid = get_projection_grid(b=args.bandwidth)
 

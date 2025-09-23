@@ -1,3 +1,33 @@
+# Euclidean neural networks for Paddle
+
+> [!IMPORTANT]
+> The paddle branch origin from [Euclidean neural networks](https://github.com/e3nn/e3nn) and adapt for Paddle.
+>
+> It was developed base version 0.5.6 of e3nn. It is recommended to install **nightly-build(develop)** Paddle before running any code in this branch.
+
+## **Install**
+
+You can install e3nn through following commands.
+
+```bash
+# install nightly-build paddlepaddle-gpu
+pip uninstall paddlepaddle-gpu
+pip install --pre paddlepaddle-gpu -i https://www.paddlepaddle.org.cn/packages/nightly/cu118/
+
+pip install .
+```
+
+## **Unit Test**
+
+Please make sure you have installed e3nn correctly before running unit tests
+
+```bash
+pip install pytest
+pytest tests/
+```
+
+# Below is e3nn's original README
+
 # Euclidean neural networks
 [![Coverage Status](https://coveralls.io/repos/github/e3nn/e3nn/badge.svg?branch=main)](https://coveralls.io/github/e3nn/e3nn?branch=main)
 [![DOI](https://zenodo.org/badge/237431920.svg)](https://zenodo.org/badge/latestdoi/237431920)

@@ -1,43 +1,41 @@
-import torch
+import paddle
 
 
-class _SoftUnitStep(torch.autograd.Function):
-    # pylint: disable=arguments-differ
-
+class _SoftUnitStep(paddle.autograd.PyLayer):
     @staticmethod
-    def forward(ctx, x) -> torch.Tensor:
+    def forward(ctx, x):
         ctx.save_for_backward(x)
-        y = torch.zeros_like(x)
+        y = paddle.zeros_like(x=x)
         m = x > 0.0
         y[m] = (-1 / x[m]).exp()
         return y
 
     @staticmethod
-    def backward(ctx, dy) -> torch.Tensor:
-        (x,) = ctx.saved_tensors
-        dx = torch.zeros_like(x)
+    def backward(ctx, dy):
+        (x,) = ctx.saved_tensor()
+        dx = paddle.zeros_like(x=x)
         m = x > 0.0
         xm = x[m]
-        dx[m] = (-1 / xm).exp() / xm.pow(2)
+        dx[m] = (-1 / xm).exp() / xm.pow(y=2)
         return dx * dy
 
 
 def soft_unit_step(x):
-    r"""smooth :math:`C^\infty` version of the unit step function
+    """smooth :math:`C^\\infty` version of the unit step function
 
     .. math::
 
-        x \mapsto \theta(x) e^{-1/x}
+        x \\mapsto \\theta(x) e^{-1/x}
 
 
     Parameters
     ----------
-    x : `torch.Tensor`
+    x : `paddle.Tensor`
         tensor of shape :math:`(...)`
 
     Returns
     -------
-    `torch.Tensor`
+    `paddle.Tensor`
         tensor of shape :math:`(...)`
 
     Examples
@@ -46,13 +44,13 @@ def soft_unit_step(x):
     .. jupyter-execute::
         :hide-code:
 
-        import torch
+        import paddle
         from e3nn.math import soft_unit_step
         import matplotlib.pyplot as plt
 
     .. jupyter-execute::
 
-        x = torch.linspace(-1.0, 10.0, 1000)
+        x = paddle.linspace(-1.0, 10.0, 1000)
         plt.plot(x, soft_unit_step(x));
     """
     return _SoftUnitStep.apply(x)

@@ -1,7 +1,9 @@
-import torch
-
+import paddle
 import pytest
-from e3nn.o3 import ToS2Grid, FromS2Grid, Irreps
+
+from e3nn.o3 import FromS2Grid
+from e3nn.o3 import Irreps
+from e3nn.o3 import ToS2Grid
 from e3nn.util.test import assert_equivariant
 
 
@@ -9,6 +11,7 @@ from e3nn.util.test import assert_equivariant
 @pytest.mark.parametrize("res_b", [12, 14, 16, None])
 @pytest.mark.parametrize("lmax", [0, 1, 5, None])
 def test_inverse1(float_tolerance, lmax, res_b, res_a) -> None:
+
     if lmax is None and res_b is None and res_a is None:
         return
 
@@ -16,7 +19,7 @@ def test_inverse1(float_tolerance, lmax, res_b, res_a) -> None:
     k = ToS2Grid(lmax, (res_b, res_a))
 
     res_b, res_a = m.res_beta, m.res_alpha
-    x = torch.randn(res_b, res_a)
+    x = paddle.randn([res_b, res_a])
     x = k(m(x))  # remove high frequencies
 
     y = k(m(x))
@@ -27,6 +30,7 @@ def test_inverse1(float_tolerance, lmax, res_b, res_a) -> None:
 @pytest.mark.parametrize("res_b", [12, 14, 16, None])
 @pytest.mark.parametrize("lmax", [0, 1, 5, None])
 def test_inverse2(float_tolerance, lmax, res_b, res_a) -> None:
+
     if lmax is None and res_b is None and res_a is None:
         return
 
@@ -34,7 +38,7 @@ def test_inverse2(float_tolerance, lmax, res_b, res_a) -> None:
     k = ToS2Grid(lmax, (res_b, res_a))
     lmax = m.lmax
 
-    x = torch.randn((lmax + 1) ** 2)
+    x = paddle.randn([(lmax + 1) ** 2])
 
     y = m(k(x))
     assert (x - y).abs().max().item() < float_tolerance
@@ -44,6 +48,7 @@ def test_inverse2(float_tolerance, lmax, res_b, res_a) -> None:
 @pytest.mark.parametrize("res_b", [98, 100])
 @pytest.mark.parametrize("lmax", [1, 5])
 def test_equivariance(lmax, res_b, res_a) -> None:
+
     m = FromS2Grid((res_b, res_a), lmax)
     k = ToS2Grid(lmax, (res_b, res_a))
 

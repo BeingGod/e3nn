@@ -1,52 +1,36 @@
-from typing import Dict, List, Tuple
+import paddle
 
-import torch
-
-from e3nn.util.default_type import explicit_default_types
-from e3nn.util.jit import compile_mode
+from e3nn.util import explicit_default_types
+from e3nn.util.paddle_utils import *  # noqa
 
 
 def moment(f, n, dtype=None, device=None):
-    r"""
+    """
     compute n th moment
     <f(z)^n> for z normal
     """
-
     dtype, device = explicit_default_types(dtype, device)
-    gen = torch.Generator(device=device).manual_seed(0)
-    z = torch.randn(1_000_000, generator=gen, dtype=torch.float64, device=device).to(dtype=dtype, device=device)
-    return f(z).pow(n).mean()
+    paddle.seed(0)
+    z = paddle.randn(shape=[1000000], dtype="float64").to(dtype=dtype, device=device)
+    return f(z).pow(y=n).mean()
 
 
-@compile_mode("trace")
-class normalize2mom(torch.nn.Module):
+class normalize2mom(paddle.nn.Layer):
     _is_id: bool
     cst: float
 
-    def __init__(
-        # pylint: disable=unused-argument
-        self,
-        f,
-        dtype=None,
-        device=None,
-    ) -> None:
+    def __init__(self, f, dtype=None, device=None):
         super().__init__()
-
-        # Try to infer a device:
-        if device is None and isinstance(f, torch.nn.Module):
-            # Avoid circular import
+        if device is None and isinstance(f, paddle.nn.Layer):
             from e3nn.util._argtools import _get_device
 
             device = _get_device(f)
-
-        with torch.no_grad():
-            cst = moment(f, 2, dtype=torch.float64, device=device).pow(-0.5).item()
-
-        if abs(cst - 1) < 1e-4:
+        with paddle.no_grad():
+            cst = moment(f, 2, dtype="float64", device="cpu").pow(y=-0.5).item()
+        if abs(cst - 1) < 0.0001:
             self._is_id = True
         else:
             self._is_id = False
-
         self.f = f
         self.cst = cst
 
@@ -54,22 +38,8 @@ class normalize2mom(torch.nn.Module):
         if self._is_id:
             return self.f(x)
         else:
-            return self.f(x).mul(self.cst)
+            return self.f(x).multiply(paddle.to_tensor(self.cst))
 
     @staticmethod
-    def _make_tracing_inputs(
-        # pylint: disable=unused-argument
-        n: int,
-    ) -> List[Dict[str, Tuple[torch.Tensor]]]:
-        # No reason to trace this with more than one tiny input,
-        # since f is assumed by `moment` to be an elementwise scalar
-        # function
-        return [
-            {
-                "forward": (
-                    torch.zeros(
-                        size=(1,),
-                    ),
-                )
-            }
-        ]
+    def _make_tracing_inputs(n: int):
+        return [{"forward": (paddle.zeros(shape=(1,)),)}]

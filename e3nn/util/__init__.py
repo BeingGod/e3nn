@@ -1,8 +1,6 @@
-from .default_type import (
-    torch_get_default_tensor_type,
-    torch_get_default_device,
-    explicit_default_types,
-)
+from .default_type import explicit_default_types
+from .default_type import paddle_get_default_device
+from .default_type import paddle_get_default_tensor_type
 
 
 def prod(x):
@@ -14,8 +12,8 @@ def prod(x):
 
 
 __all__ = [
-    "torch_get_default_tensor_type",
-    "torch_get_default_device",
+    "paddle_get_default_tensor_type",
+    "paddle_get_default_device",
     "explicit_default_types",
     "prod",
 ]

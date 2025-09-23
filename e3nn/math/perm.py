@@ -1,9 +1,13 @@
-from typing import Tuple, Set, Optional
-
-import random
 import math
-import torch
+import random
+from typing import Optional
+from typing import Set
+from typing import Tuple
+
+import paddle
+
 from e3nn.math import complete_basis
+from e3nn.util.paddle_utils import *  # noqa
 
 TY_PERM = Tuple[int]
 
@@ -17,19 +21,16 @@ def identity(n: int) -> TY_PERM:
 
 
 def compose(p1: TY_PERM, p2: TY_PERM) -> TY_PERM:
-    r"""
+    """
     compute p1 . p2
     """
     assert is_perm(p1) and is_perm(p2)
     assert len(p1) == len(p2)
-    # p: i |-> p[i]
-
-    # [p1.p2](i) = p1(p2(i)) = p1[p2[i]]
     return tuple(p1[p2[i]] for i in range(len(p1)))
 
 
 def inverse(p: TY_PERM) -> TY_PERM:
-    r"""
+    """
     compute the inverse permutation
     """
     return tuple(p.index(i) for i in range(len(p)))
@@ -80,32 +81,24 @@ def germinate(subset: Set[TY_PERM]) -> Set[TY_PERM]:
 def is_group(g: Set[TY_PERM]) -> bool:
     if len(g) == 0:
         return False
-
     n = len(next(iter(g)))
-
     for p in g:
         assert len(p) == n, p
-
     if identity(n) not in g:
         return False
-
     for p in g:
         if inverse(p) not in g:
             return False
-
     for p1 in g:
         for p2 in g:
             if compose(p1, p2) not in g:
                 return False
-
     return True
 
 
 def to_cycles(p: TY_PERM) -> Set[Tuple[int]]:
     n = len(p)
-
     cycles = set()
-
     for i in range(n):
         c = [i]
         while p[i] != c[0]:
@@ -115,7 +108,6 @@ def to_cycles(p: TY_PERM) -> Set[Tuple[int]]:
             i = c.index(min(c))
             c = c[i:] + c[:i]
             cycles.add(tuple(c))
-
     return cycles
 
 
@@ -128,22 +120,24 @@ def sign(p: TY_PERM) -> int:
 
 
 def standard_representation(
-    p: TY_PERM, dtype: Optional[torch.dtype] = None, device: Optional[torch.dtype] = None
-) -> torch.Tensor:
-    r"""irrep of Sn of dimension n - 1"""
-    A = complete_basis(torch.ones(1, len(p), dtype=dtype, device=device), eps=0.1 / len(p))
+    p: TY_PERM,
+    dtype: Optional[paddle.dtype] = None,
+    device: Optional[paddle.dtype] = None,
+) -> paddle.Tensor:
+    """irrep of Sn of dimension n - 1"""
+    A = complete_basis(paddle.ones(shape=[1, len(p)], dtype=dtype), eps=0.1 / len(p))
     return A @ natural_representation(p) @ A.T
 
 
 def natural_representation(
-    p: TY_PERM, dtype: Optional[torch.dtype] = None, device: Optional[torch.dtype] = None
-) -> torch.Tensor:
-    r"""natural representation of Sn"""
+    p: TY_PERM,
+    dtype: Optional[paddle.dtype] = None,
+    device: Optional[paddle.dtype] = None,
+) -> paddle.Tensor:
+    """natural representation of Sn"""
     n = len(p)
     ip = inverse(p)
-    d = torch.zeros(n, n, dtype=dtype, device=device)
-
+    d = paddle.zeros(shape=[n, n], dtype=dtype)
     for a in range(n):
         d[a, ip[a]] = 1
-
     return d

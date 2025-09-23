@@ -23,7 +23,7 @@ classifiers = [
 dependencies = [
   "sympy",
   "scipy",
-  "torch>=1.8.0",
+  "paddlepaddle-gpu",
   "opt_einsum_fx>=0.1.4"
 ]
 
@@ -36,8 +36,8 @@ dev = [
 [project.urls]
 homepage = "https://e3nn.org"
 documentation = "https://docs.e3nn.org/"
-repository = "https://github.com/e3nn/e3nn.git"
-changelog = "https://github.com/e3nn/e3nn/blob/main/.github/CHANGELOG.md"
+repository = "https://github.com/PFCClab/e3nn.git"
+changelog = "https://github.com/PFCClab/e3nn/blob/main/.github/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 exclude = [
@@ -95,13 +95,12 @@ source = ["e3nn"]
 [tool.coverage.report]
 exclude_lines = [
     "pragma: no cover",
-    "torch.jit.script",
     "raise",
     "except",
 ]
 
 [tool.pylint.typecheck]
-generated-members = "numpy.*,torch.*"
+generated-members = "numpy.*,paddle.*"
 
 [tool.pylint."messages control"]
 disable = [

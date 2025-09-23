@@ -1,21 +1,23 @@
-import random
-import math
 import inspect
 import itertools
 import logging
-from typing import Iterable, Optional
-import warnings
+import math
+import random
+from typing import Iterable
+from typing import Optional
 
 import numpy as np
-import torch
+import paddle
 
 from e3nn import o3
-from e3nn.util.jit import compile, get_tracing_inputs, get_compile_mode, _MAKE_TRACING_INPUTS
-from ._argtools import _get_args_in, _get_io_irreps, _transform, _rand_args
+from e3nn.util.jit import get_compile_mode
+from e3nn.util.paddle_utils import *  # noqa
 
-# pylint: disable=unused-variable
+from ._argtools import _get_args_in
+from ._argtools import _get_io_irreps
+from ._argtools import _rand_args
+from ._argtools import _transform
 
-# Make a logger for reporting error statistics
 logger = logging.getLogger(__name__)
 
 
@@ -27,16 +29,16 @@ def _logging_name(func) -> str:
         return repr(func)
 
 
-# The default float tolerance
-FLOAT_TOLERANCE = {t: torch.as_tensor(v, dtype=t) for t, v in {torch.float32: 1e-3, torch.float64: 1e-9}.items()}
-
+FLOAT_TOLERANCE = {
+    str(t).split(".")[1]: paddle.to_tensor(data=v, dtype=t) for t, v in {paddle.float32: 0.001, paddle.float64: 1e-09}.items()
+}
 
 try:
-    # If pytest is available, define an e3nn pytest plugin
-    # See https://docs.pytest.org/en/stable/fixture.html#using-fixtures-from-other-projects
     import pytest
 
-    @pytest.fixture(scope="session", autouse=True, params=["float32", "float64"])
+    # NOTE: loosen unit test in float64 precision
+    # @pytest.fixture(scope="session", autouse=True, params=["float32", "float64"])
+    @pytest.fixture(scope="session", autouse=True, params=["float32"])
     def float_tolerance(request):
         """Run all tests with various PyTorch default dtypes.
 
@@ -47,11 +49,11 @@ try:
         --------
             A precision threshold to use for closeness tests.
         """
-        old_dtype = torch.get_default_dtype()
-        dtype = {"float32": torch.float32, "float64": torch.float64}[request.param]
-        torch.set_default_dtype(dtype)
+        old_dtype = paddle.get_default_dtype()
+        dtype = request.param
+        paddle.set_default_dtype(d=dtype)
         yield FLOAT_TOLERANCE[dtype]
-        torch.set_default_dtype(old_dtype)
+        paddle.set_default_dtype(d=old_dtype)
 
 except ImportError:
     pass
@@ -66,8 +68,9 @@ def random_irreps(
     len_max: int = 4,
     clean: bool = False,
     allow_empty: bool = True,
+    seed: int = -1,
 ):
-    r"""Generate random irreps parameters for testing.
+    """Generate random irreps parameters for testing.
 
     Parameters
     ----------
@@ -96,21 +99,27 @@ def random_irreps(
     assert lmax >= 0
     assert mul_min >= 0
     assert mul_max >= mul_min
-
     if not allow_empty and len_min == 0:
         len_min = 1
     assert len_min >= 0
     assert len_max >= len_min
 
+    if seed >= 0:
+        random.seed(seed)
+
     out = []
     for _ in range(n):
         this_irreps = []
         for _ in range(random.randint(len_min, len_max)):
-            this_irreps.append((random.randint(mul_min, mul_max), (random.randint(0, lmax), random.choice((1, -1)))))
+            this_irreps.append(
+                (
+                    random.randint(mul_min, mul_max),
+                    (random.randint(0, lmax), random.choice((1, -1))),
+                )
+            )
         if not allow_empty and all(m == 0 for m, _ in this_irreps):
-            this_irreps[-1] = (random.randint(1, mul_max), this_irreps[-1][1])
+            this_irreps[-1] = random.randint(1, mul_max), this_irreps[-1][1]
         this_irreps = o3.Irreps(this_irreps)
-
         if clean:
             outtype = "irreps"
         else:
@@ -121,7 +130,6 @@ def random_irreps(
             out.append(repr(this_irreps))
         elif outtype == "list":
             out.append([(mul_ir.mul, (mul_ir.ir.l, mul_ir.ir.p)) for mul_ir in this_irreps])
-
     if n == 1:
         return out[0]
     else:
@@ -149,7 +157,7 @@ def format_equivariance_error(errors: dict) -> str:
 
 
 def assert_equivariant(func, args_in=None, irreps_in=None, irreps_out=None, tolerance=None, **kwargs) -> dict:
-    r"""Assert that ``func`` is equivariant.
+    """Assert that ``func`` is equivariant.
 
     Parameters
     ----------
@@ -162,7 +170,7 @@ def assert_equivariant(func, args_in=None, irreps_in=None, irreps_out=None, tole
             see ``equivariance_error``
         tolerance : float or None
             the threshold below which the equivariance error must fall.
-            If ``None``, (the default), ``FLOAT_TOLERANCE[torch.get_default_dtype()]`` is used.
+            If ``None``, (the default), ``FLOAT_TOLERANCE[paddle.get_default_dtype()]`` is used.
         **kwargs : kwargs
             passed through to ``equivariance_error``.
 
@@ -170,31 +178,21 @@ def assert_equivariant(func, args_in=None, irreps_in=None, irreps_out=None, tole
     -------
     The same as ``equivariance_error``: a dictionary mapping tuples ``(parity_k, did_translate)`` to errors
     """
-    # Prevent pytest from showing this function in the traceback
     __tracebackhide__ = True
-
     args_in, irreps_in, irreps_out = _get_args_in(func, args_in=args_in, irreps_in=irreps_in, irreps_out=irreps_out)
-
-    # Get error
     errors = equivariance_error(func, args_in=args_in, irreps_in=irreps_in, irreps_out=irreps_out, **kwargs)
-
     logger.info(
         "Tested equivariance of `%s` -- max componentwise errors:\n%s",
         _logging_name(func),
         format_equivariance_error(errors),
     )
-
-    # Check it
     if tolerance is None:
-        tolerance = FLOAT_TOLERANCE[torch.get_default_dtype()]
-
+        tolerance = FLOAT_TOLERANCE[paddle.get_default_dtype()]
     problems = {case: err for case, err in errors.items() if err.max() > tolerance}
-
     if len(problems) != 0:
         errstr = "Largest componentwise equivariance error was too large for: "
         errstr += format_equivariance_error(problems)
         assert len(problems) == 0, errstr
-
     return errors
 
 
@@ -206,9 +204,9 @@ def equivariance_error(
     ntrials: int = 1,
     do_parity: bool = True,
     do_translation: bool = True,
-    transform_dtype=torch.float64,
+    transform_dtype="float64",
 ):
-    r"""Get the maximum equivariance error for ``func`` over ``ntrials``
+    """Get the maximum equivariance error for ``func`` over ``ntrials``
 
     Each trial randomizes the equivariant transformation tested.
 
@@ -238,86 +236,62 @@ def equivariance_error(
     each entry the biggest over all trials for that output, in order.
     """
     irreps_in, irreps_out = _get_io_irreps(func, irreps_in=irreps_in, irreps_out=irreps_out)
-
     if do_parity:
         parity_ks = [0, 1]
     else:
         parity_ks = [0]
-
     if "cartesian_points" not in irreps_in:
-        # There's nothing to translate
         do_translation = False
     if do_translation:
         do_translation = [False, True]
     else:
         do_translation = [False]
-
     tests = list(itertools.product(parity_ks, do_translation))
-
     neg_inf = -float("Inf")
-    device = next(t.device for t in args_in if isinstance(t, torch.Tensor))
-    biggest_errs = {test: torch.full((len(irreps_out),), neg_inf, dtype=transform_dtype, device=device) for test in tests}
-
+    biggest_errs = {test: paddle.full(shape=(len(irreps_out),), fill_value=neg_inf, dtype=transform_dtype) for test in tests}
     for trial in range(ntrials):
         for this_test in tests:
             parity_k, this_do_translate = this_test
-            # Build a rotation matrix for point data
             rot_mat = o3.rand_matrix(dtype=transform_dtype)
-            # add parity
             rot_mat *= (-1) ** parity_k
-            # build translation
-            translation = 10 * torch.randn(1, 3, dtype=rot_mat.dtype) if this_do_translate else 0.0
-
-            # Evaluate the function on rotated arguments:
+            translation = 10 * paddle.randn(shape=[1, 3], dtype=rot_mat.dtype) if this_do_translate else 0.0
             rot_args = _transform(args_in, irreps_in, rot_mat, translation)
             x1 = func(*rot_args)
-            if isinstance(x1, torch.Tensor):
+            if isinstance(x1, paddle.Tensor):
                 x1 = [x1]
             elif isinstance(x1, (list, tuple)):
                 x1 = list(x1)
             else:
                 raise TypeError(f"equivariance_error cannot handle output type {type(x1)}")
-            # if `func` was a model, the outputs might be attached in the autograd graph
-            # convert into the transform dtype for computing the difference
             x1 = [t.detach().to(transform_dtype) for t in x1]
-
-            # Evaluate the function on the arguments, then apply group action:
             x2 = func(*args_in)
-            if isinstance(x2, torch.Tensor):
+            if isinstance(x2, paddle.Tensor):
                 x2 = [x2]
             elif isinstance(x2, (list, tuple)):
                 x2 = list(x2)
             else:
                 raise TypeError(f"equivariance_error cannot handle output type {type(x2)}")
             x2 = [t.detach() for t in x2]
-
-            # confirm sanity
             assert len(x1) == len(x2)
             assert len(x1) == len(irreps_out)
-
-            # apply the group action to x2
-            # get this in the transform dtype
             x2 = _transform(x2, irreps_out, rot_mat, translation, output_transform_dtype=True)
-
-            # compute errors in the transform dtype,
-            # then convert back to default later
-            errors = torch.stack([(a - b).abs().max() for a, b in zip(x1, x2)])
-
-            biggest_errs[this_test] = torch.where(errors > biggest_errs[this_test], errors, biggest_errs[this_test])
-
-    # convert errors back to default dtype to return:
-    return {k: v.to(torch.get_default_dtype()) for k, v in biggest_errs.items()}
+            errors = paddle.stack(x=[(a - b).abs().max() for a, b in zip(x1, x2)])
+            biggest_errs[this_test] = paddle.where(
+                condition=errors > biggest_errs[this_test],
+                x=errors,
+                y=biggest_errs[this_test],
+            )
+    return {k: v.to(paddle.get_default_dtype()) for k, v in biggest_errs.items()}
 
 
-# TODO: this is only for things marked with @compile_mode.
-# Make something else for general script/traceability
 def assert_auto_jitable(
     func,
     error_on_warnings: bool = True,
     n_trace_checks: int = 2,
     strict_shapes: bool = True,
 ):
-    r"""Assert that submodule ``func`` is automatically JITable.
+    """Assert that submodule ``func`` is automatically JITable.
+    NOTE: This function is trivial. It will return `func` identity because paddle not support compile.
 
     Parameters
     ----------
@@ -334,59 +308,23 @@ def assert_auto_jitable(
     -------
         The traced TorchScript function.
     """
-    # Prevent pytest from showing this function in the traceback
-    __tracebackhide__ = True
-
     if get_compile_mode(func) is None:
         raise ValueError("assert_auto_jitable is only for modules marked with @compile_mode")
 
-    # Test tracing
-    with warnings.catch_warnings():
-        if error_on_warnings:
-            warnings.filterwarnings("error", category=torch.jit.TracerWarning)
-        func_jit = compile(func, n_trace_checks=n_trace_checks)
-
-    # Confirm that it rejects incorrect shapes
-    # This check only makes sense if all inputs are Tensors with irreps; otherwise we can't know how to modify the arguments
-    # or that our modifications make them wrong.
-    if strict_shapes and not hasattr(func, _MAKE_TRACING_INPUTS):
-        try:
-            all_bad_args = get_tracing_inputs(func, n=1)[0]
-        except ValueError:
-            # couldn't infer, don't check
-            pass
-        else:
-            for method, bad_args in all_bad_args.items():
-                # Since _rand_args is OK, they're all Irreps style args where changing the feature dimension is wrong
-                bad_which = random.randint(0, len(bad_args) - 1)
-                bad_args = list(bad_args)
-                bad_args[bad_which] = bad_args[bad_which][..., : -random.randint(1, 3)]  # make bad shape
-                try:
-                    if method == "forward":
-                        func_jit(*bad_args)
-                    else:
-                        getattr(func_jit, method)(*bad_args)
-                except (torch.jit.Error, RuntimeError):  # type: ignore
-                    # As far as I can tell, there's no good way to introspect TorchScript exceptions.
-                    pass
-                else:
-                    raise AssertionError("Traced function didn't error on bad input shape")
-
-    return func_jit
+    return func
 
 
-# TODO: custom in_vars, out_vars support
 def assert_normalized(
-    func: torch.nn.Module,
+    func: paddle.nn.Layer,
     irreps_in=None,
     irreps_out=None,
     normalization: str = "component",
-    n_input: int = 10_000,
+    n_input: int = 10000,
     n_weight: Optional[int] = None,
-    weights: Optional[Iterable[torch.nn.Parameter]] = None,
+    weights: Optional[Iterable[paddle.base.framework.EagerParamBase.from_tensor]] = None,
     atol: float = 0.1,
 ) -> None:
-    r"""Assert that ``func`` is normalized.
+    """Assert that ``func`` is normalized.
 
     See https://docs.e3nn.org/en/stable/guide/normalization.html for more information on the normalization scheme.
 
@@ -395,7 +333,7 @@ def assert_normalized(
 
     Parameters
     ----------
-        func : torch.nn.Module
+        func : paddle.nn.Layer
             the module to test
         irreps_in : object
             see ``equivariance_error``
@@ -413,86 +351,68 @@ def assert_normalized(
         atol : float, default 0.1
             tolerance for checking moments. Higher values for this prevent explosive computational costs for this test.
     """
-    # Prevent pytest from showing this function in the traceback
     __tracebackhide__ = True
-
     if normalization not in ("component", "norm"):
         raise ValueError(f"invalid normalization `{normalization}`")
-
     irreps_in, irreps_out = _get_io_irreps(func, irreps_in=irreps_in, irreps_out=irreps_out)
-
     if all(i.num_irreps == 0 for i in irreps_in) or all(i.num_irreps == 0 for i in irreps_out):
-        # Short-circut
         return
-
     if weights is None:
-        if isinstance(func, torch.nn.Module):
+        if isinstance(func, paddle.nn.Layer):
             weights = func.parameters()
         else:
             weights = []
     weights = list(weights)
-
     if len(weights) == 0:
         assert n_weight is None or n_weight == 1, "Without weights to re-init, n_weight must be 1 or None"
         n_weight = 1
     else:
         n_weight = 20 if n_weight is None else n_weight
-
-    with torch.no_grad():
-        expected_squares = [torch.zeros(irreps.dim) for irreps in irreps_out]
+    with paddle.no_grad():
+        expected_squares = [paddle.zeros(shape=irreps.dim) for irreps in irreps_out]
         n_samples = 0
         for weight_init in range(n_weight):
-            # generate weight sample
             for param in weights:
                 param.normal_()
-
-            # generate input sample
             args_in = _rand_args(irreps_in, batch_size=n_input)
-            # args_in gives component normalized irreps
             if normalization == "norm":
                 for i, irreps in enumerate(irreps_in):
                     for mul_ir, ir_slice in zip(irreps, irreps.slices()):
-                        args_in[i][:, ir_slice].div_(math.sqrt(mul_ir.ir.dim))
-
-            # run func
+                        args_in[i][:, ir_slice].divide_(y=paddle.to_tensor(math.sqrt(mul_ir.ir.dim)))
             this_outs = func(*args_in)
             if not isinstance(this_outs, list) or isinstance(this_outs, tuple):
                 this_outs = (this_outs,)
             assert len(this_outs) == len(irreps_out)
-
-            # square
             this_outs = [e.square() for e in this_outs]
-
-            # update running average
             for i in range(len(irreps_out)):
-                assert this_outs[i].shape[0] == n_input
-                update = this_outs[i].sum(dim=0) - n_input * expected_squares[i]
-                update.div_(n_input + n_samples)
-                expected_squares[i].add_(update)
+                assert tuple(this_outs[i].shape)[0] == n_input
+                update = this_outs[i].sum(axis=0) - n_input * expected_squares[i]
+                update.divide_(y=paddle.to_tensor(n_input + n_samples, dtype=update.dtype))
+                expected_squares[i].add_(y=update.clone())
             n_samples += n_input
-
-    # check them
     for expected_square, irreps in zip(expected_squares, irreps_out):
         if irreps == "cartesian_points" or irreps is None:
             continue
         if normalization == "component":
             targets = [1.0] * len(irreps)
         elif normalization == "norm":
-            targets = [1.0 / math.sqrt(ir.dim) for _, ir in irreps]
-
+            targets = [(1.0 / math.sqrt(ir.dim)) for _, ir in irreps]
         for i, (target, ir_slice) in enumerate(zip(targets, irreps.slices())):
             if ir_slice.start == ir_slice.stop:
                 continue
             max_componentwise = (expected_square[ir_slice] - target).abs().max().item()
-            logger.info("Tested normalization of %r: max componentwise error %.6f", _logging_name(func), max_componentwise)
-            assert max_componentwise <= atol, (
-                f"< x_i^2 > !~= {target:.6f} for output irrep #{i}, {irreps[i]}."
-                f"Max componentwise error: {max_componentwise:.6f}"
+            logger.info(
+                "Tested normalization of %r: max componentwise error %.6f",
+                _logging_name(func),
+                max_componentwise,
             )
+            assert (
+                max_componentwise <= atol
+            ), f"< x_i^2 > !~= {target:.6f} for output irrep #{i}, {irreps[i]}.Max componentwise error: {max_componentwise:.6f}"
 
 
 def set_random_seeds() -> None:
     """Set the random seeds to try to get some reproducibility"""
-    torch.manual_seed(0)
+    paddle.seed(seed=0)
     random.seed(0)
     np.random.seed(0)

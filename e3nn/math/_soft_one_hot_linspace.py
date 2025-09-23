@@ -1,31 +1,35 @@
 import math
-import torch
 
-from e3nn.math import soft_unit_step
+import paddle
+
+from e3nn.util.paddle_utils import *  # noqa
+
+# from e3nn.math import soft_unit_step
+from ._soft_unit_step import soft_unit_step
 
 
-def soft_one_hot_linspace(x: torch.Tensor, start, end, number, basis=None, cutoff=None) -> torch.Tensor:
-    r"""Projection on a basis of functions
+def soft_one_hot_linspace(x: paddle.Tensor, start, end, number, basis=None, cutoff=None):
+    """Projection on a basis of functions
 
-    Returns a set of :math:`\{y_i(x)\}_{i=1}^N`,
+    Returns a set of :math:`\\{y_i(x)\\}_{i=1}^N`,
 
     .. math::
 
-        y_i(x) = \frac{1}{Z} f_i(x)
+        y_i(x) = \\frac{1}{Z} f_i(x)
 
     where :math:`x` is the input and :math:`f_i` is the ith basis function.
     :math:`Z` is a constant defined (if possible) such that,
 
     .. math::
 
-        \langle \sum_{i=1}^N y_i(x)^2 \rangle_x \approx 1
+        \\langle \\sum_{i=1}^N y_i(x)^2 \\rangle_x \\approx 1
 
     See the last plot below.
     Note that ``bessel`` basis cannot be normalized.
 
     Parameters
     ----------
-    x : `torch.Tensor`
+    x : `paddle.Tensor`
         tensor of shape :math:`(...)`
 
     start : float
@@ -43,11 +47,11 @@ def soft_one_hot_linspace(x: torch.Tensor, start, end, number, basis=None, cutof
 
     cutoff : bool
         if ``cutoff=True`` then for all :math:`x` outside of the interval defined by ``(start, end)``,
-        :math:`\forall i, \; f_i(x) \approx 0`
+        :math:`\\forall i, \\; f_i(x) \\approx 0`
 
     Returns
     -------
-    `torch.Tensor`
+    `paddle.Tensor`
         tensor of shape :math:`(..., N)`
 
     Examples
@@ -56,14 +60,14 @@ def soft_one_hot_linspace(x: torch.Tensor, start, end, number, basis=None, cutof
     .. jupyter-execute::
         :hide-code:
 
-        import torch
+        import paddle
         from e3nn.math import soft_one_hot_linspace
         import matplotlib.pyplot as plt
 
     .. jupyter-execute::
 
         bases = ['gaussian', 'cosine', 'smooth_finite', 'fourier', 'bessel']
-        x = torch.linspace(-1.0, 2.0, 100)
+        x = paddle.linspace(-1.0, 2.0, 100)
 
     .. jupyter-execute::
 
@@ -95,48 +99,40 @@ def soft_one_hot_linspace(x: torch.Tensor, start, end, number, basis=None, cutof
         plt.ylim(0, 2)
         plt.tight_layout()
     """
-    # pylint: disable=misplaced-comparison-constant
-
     if cutoff not in [True, False]:
         raise ValueError("cutoff must be specified")
-
     if not cutoff:
-        values = torch.linspace(start, end, number, dtype=x.dtype, device=x.device)
+        values = paddle.linspace(start=start, stop=end, num=number, dtype=x.dtype)
         step = values[1] - values[0]
     else:
-        values = torch.linspace(start, end, number + 2, dtype=x.dtype, device=x.device)
+        values = paddle.linspace(start=start, stop=end, num=number + 2, dtype=x.dtype)
         step = values[1] - values[0]
         values = values[1:-1]
-
     diff = (x[..., None] - values) / step
-
     if basis == "gaussian":
-        return diff.pow(2).neg().exp().div(1.12)
-
+        scale = paddle.to_tensor(1.12, dtype=x.dtype)
+        return diff.pow(y=2).neg().exp().divide(scale)
     if basis == "cosine":
-        return torch.cos(math.pi / 2 * diff) * (diff < 1) * (-1 < diff)
-
+        return paddle.cos(math.pi / 2 * diff) * (diff < 1).astype(paddle.float32) * (-1 < diff).astype(paddle.float32)
     if basis == "smooth_finite":
-        return 1.14136 * torch.exp(torch.tensor(2.0)) * soft_unit_step(diff + 1) * soft_unit_step(1 - diff)
-
+        return 1.14136 * paddle.exp(x=paddle.to_tensor(data=2.0)) * soft_unit_step(diff + 1) * soft_unit_step(1 - diff)
     if basis == "fourier":
         x = (x[..., None] - start) / (end - start)
         if not cutoff:
-            i = torch.arange(0, number, dtype=x.dtype, device=x.device)
-            return torch.cos(math.pi * i * x) / math.sqrt(0.25 + number / 2)
+            i = paddle.arange(start=0, end=number, dtype=x.dtype)
+            return paddle.cos(x=math.pi * i * x) / math.sqrt(0.25 + number / 2)
         else:
-            i = torch.arange(1, number + 1, dtype=x.dtype, device=x.device)
-            return torch.sin(math.pi * i * x) / math.sqrt(0.25 + number / 2) * (0 < x) * (x < 1)
-
+            i = paddle.arange(start=1, end=number + 1, dtype=x.dtype)
+            mask = paddle.cast((0 < x) & (x < 1), dtype=x.dtype)
+            return paddle.sin(x=math.pi * i * x) / math.sqrt(0.25 + number / 2) * mask
     if basis == "bessel":
         x = x[..., None] - start
         c = end - start
-        bessel_roots = torch.arange(1, number + 1, dtype=x.dtype, device=x.device) * math.pi
-        out = math.sqrt(2 / c) * torch.sin(bessel_roots * x / c) / x
-
+        bessel_roots = paddle.arange(start=1, end=number + 1, dtype=x.dtype) * math.pi
+        out = math.sqrt(2 / c) * paddle.sin(x=bessel_roots * x / c) / x
         if not cutoff:
             return out
         else:
-            return out * ((x / c) < 1) * (0 < x)
-
+            mask = paddle.cast((x / c < 1) & (0 < x), dtype=x.dtype)
+            return out * mask
     raise ValueError(f'basis="{basis}" is not a valid entry')

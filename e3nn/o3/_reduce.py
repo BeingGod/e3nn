@@ -1,29 +1,27 @@
 import collections
 
-import torch
-from torch import fx
+import paddle
 
-from e3nn.o3._irreps import Irrep, Irreps
-from e3nn.o3._wigner import wigner_3j
-from e3nn.o3._tensor_product._tensor_product import TensorProduct
-from e3nn.math import germinate_formulas, orthonormalize, reduce_permutation
+from e3nn import o3
+from e3nn.math import germinate_formulas
+from e3nn.math import orthonormalize
+from e3nn.math import reduce_permutation
 from e3nn.util import explicit_default_types
 from e3nn.util.codegen import CodeGenMixin
-from e3nn.util.jit import compile_mode
 
 _TP = collections.namedtuple("tp", "op, args")
 _INPUT = collections.namedtuple("input", "tensor, start, stop")
 
 
-def _wigner_nj(*irrepss, normalization: str = "component", filter_ir_mid=None, dtype=None, device=None):
-    irrepss = [Irreps(irreps) for irreps in irrepss]
+def _wigner_nj(*irrepss, normalization="component", filter_ir_mid=None, dtype=None, device=None):
+    irrepss = [o3.Irreps(irreps) for irreps in irrepss]
     if filter_ir_mid is not None:
-        filter_ir_mid = [Irrep(ir) for ir in filter_ir_mid]
+        filter_ir_mid = [o3.Irrep(ir) for ir in filter_ir_mid]
 
     if len(irrepss) == 1:
         (irreps,) = irrepss
         ret = []
-        e = torch.eye(irreps.dim, dtype=dtype, device=device)
+        e = paddle.eye(irreps.dim, dtype=dtype)
         i = 0
         for mul, ir in irreps:
             for _ in range(mul):
@@ -35,7 +33,10 @@ def _wigner_nj(*irrepss, normalization: str = "component", filter_ir_mid=None, d
     *irrepss_left, irreps_right = irrepss
     ret = []
     for ir_left, path_left, C_left in _wigner_nj(
-        *irrepss_left, normalization=normalization, filter_ir_mid=filter_ir_mid, dtype=dtype, device=device
+        *irrepss_left,
+        normalization=normalization,
+        filter_ir_mid=filter_ir_mid,
+        dtype=dtype,
     ):
         i = 0
         for mul, ir in irreps_right:
@@ -43,24 +44,31 @@ def _wigner_nj(*irrepss, normalization: str = "component", filter_ir_mid=None, d
                 if filter_ir_mid is not None and ir_out not in filter_ir_mid:
                     continue
 
-                C = wigner_3j(ir_out.l, ir_left.l, ir.l, dtype=dtype, device=device)
+                C = o3.wigner_3j(ir_out.l, ir_left.l, ir.l, dtype=dtype)
                 if normalization == "component":
                     C *= ir_out.dim**0.5
                 if normalization == "norm":
-                    C *= ir_left.dim**0.5 * ir.dim**0.5
+                    C *= ir_left.dim**0.5 * ir.dim**0.0
+                C = paddle.einsum("jk,ijl->ikl", C_left.flatten(1), C)
+                C = C.reshape([ir_out.dim, *(irreps.dim for irreps in irrepss_left), ir.dim])
 
-                C = torch.einsum("jk,ijl->ikl", C_left.flatten(1), C)
-                C = C.reshape(ir_out.dim, *(irreps.dim for irreps in irrepss_left), ir.dim)
                 for u in range(mul):
-                    E = torch.zeros(
-                        ir_out.dim, *(irreps.dim for irreps in irrepss_left), irreps_right.dim, dtype=dtype, device=device
+                    E = paddle.zeros(
+                        [ir_out.dim] + [irreps.dim for irreps in irrepss_left] + [irreps_right.dim],
+                        dtype=dtype,
                     )
                     sl = slice(i + u * ir.dim, i + (u + 1) * ir.dim)
                     E[..., sl] = C
                     ret += [
                         (
                             ir_out,
-                            _TP(op=(ir_left, ir, ir_out), args=(path_left, _INPUT(len(irrepss_left), sl.start, sl.stop))),
+                            _TP(
+                                op=(ir_left, ir, ir_out),
+                                args=(
+                                    path_left,
+                                    _INPUT(len(irrepss_left), sl.start, sl.stop),
+                                ),
+                            ),
                             E,
                         )
                     ]
@@ -78,8 +86,7 @@ def _get_ops(path):
         yield op
 
 
-@compile_mode("trace")
-class ReducedTensorProducts(CodeGenMixin, torch.nn.Module):
+class ReducedTensorProducts(CodeGenMixin, paddle.nn.Layer):
     r"""reduce a tensor with symmetries into irreducible representations
 
     Parameters
@@ -108,47 +115,48 @@ class ReducedTensorProducts(CodeGenMixin, torch.nn.Module):
     irreps_out : `e3nn.o3.Irreps`
         output representation
 
-    change_of_basis : `torch.Tensor`
+    change_of_basis : `paddle.Tensor`
         tensor of shape ``(irreps_out.dim, irreps_in[0].dim, ..., irreps_in[-1].dim)``
 
     Examples
     --------
     >>> tp = ReducedTensorProducts('ij=-ji', i='1o')
-    >>> x = torch.tensor([1.0, 0.0, 0.0])
-    >>> y = torch.tensor([0.0, 1.0, 0.0])
+    >>> x = paddle.to_tensor([1.0, 0.0, 0.0])
+    >>> y = paddle.to_tensor([0.0, 1.0, 0.0])
     >>> tp(x, y) + tp(y, x)
-    tensor([0., 0., 0.])
+    Tensor(shape=[3], dtype=float32, place=Place(gpu:0), stop_gradient=True,
+           [0., 0., 0.])
 
     >>> tp = ReducedTensorProducts('ijkl=jikl=ikjl=ijlk', i="1e")
     >>> tp.irreps_out
     1x0e+1x2e+1x4e
 
     >>> tp = ReducedTensorProducts('ij=ji', i='1o')
-    >>> x, y = torch.randn(2, 3)
-    >>> a = torch.einsum('zij,i,j->z', tp.change_of_basis, x, y)
+    >>> x, y = paddle.randn([2, 3])
+    >>> a = paddle.einsum('zij,i,j->z', tp.change_of_basis, x, y)
     >>> b = tp(x, y)
-    >>> assert torch.allclose(a, b, atol=1e-3, rtol=1e-3)
+    >>> assert paddle.allclose(a, b, atol=1e-3, rtol=1e-3)
     """
     # pylint: disable=abstract-method
 
-    def __init__(self, formula, filter_ir_out=None, filter_ir_mid=None, eps: float = 1e-9, **irreps) -> None:
+    def __init__(self, formula, filter_ir_out=None, filter_ir_mid=None, eps=1e-9, **irreps):
         super().__init__()
 
         if filter_ir_out is not None:
             try:
-                filter_ir_out = [Irrep(ir) for ir in filter_ir_out]
+                filter_ir_out = [o3.Irrep(ir) for ir in filter_ir_out]
             except ValueError:
                 raise ValueError(f"filter_ir_out (={filter_ir_out}) must be an iterable of e3nn.o3.Irrep")
 
         if filter_ir_mid is not None:
             try:
-                filter_ir_mid = [Irrep(ir) for ir in filter_ir_mid]
+                filter_ir_mid = [o3.Irrep(ir) for ir in filter_ir_mid]
             except ValueError:
                 raise ValueError(f"filter_ir_mid (={filter_ir_mid}) must be an iterable of e3nn.o3.Irrep")
 
         f0, formulas = germinate_formulas(formula)
 
-        irreps = {i: Irreps(irs) for i, irs in irreps.items()}
+        irreps = {i: o3.Irreps(irs) for i, irs in irreps.items()}
 
         for i in irreps:
             if len(i) != 1:
@@ -172,60 +180,63 @@ class ReducedTensorProducts(CodeGenMixin, torch.nn.Module):
             if i not in f0:
                 raise RuntimeError(f"index {i} has an irreps but does not appear in the fomula")
 
-        base_perm, _ = reduce_permutation(f0, formulas, dtype=torch.float64, **{i: irs.dim for i, irs in irreps.items()})
+        base_perm, _ = reduce_permutation(f0, formulas, dtype="float64", **{i: irs.dim for i, irs in irreps.items()})
 
         Ps = collections.defaultdict(list)
 
-        for ir, path, base_o3 in _wigner_nj(*[irreps[i] for i in f0], filter_ir_mid=filter_ir_mid, dtype=torch.float64):
+        for ir, path, base_o3 in _wigner_nj(*[irreps[i] for i in f0], filter_ir_mid=filter_ir_mid, dtype="float64"):
             if filter_ir_out is None or ir in filter_ir_out:
-                # P = base_o3.flatten(1) @ base_perm.flatten(1).T
-                # if P.norm() > eps:  # if this Irrep is present in the premutation basis we keep it
                 Ps[ir].append((path, base_o3))
 
         outputs = []
         change_of_basis = []
         irreps_out = []
 
-        P = base_perm.flatten(1)  # [permutation basis, input basis] (a,omega)
-        PP = P @ P.T  # (a,a)
+        P = base_perm.reshape([base_perm.shape[0], -1])
+        PP = paddle.matmul(P, P.t())
 
         for ir in Ps:
             mul = len(Ps[ir])
             paths = [path for path, _ in Ps[ir]]
-            base_o3 = torch.stack([R for _, R in Ps[ir]])
+            base_o3 = paddle.stack([R for _, R in Ps[ir]])
 
-            R = base_o3.flatten(2)  # [multiplicity, ir, input basis] (u,j,omega)
+            R = base_o3.reshape([base_o3.shape[0], ir.dim, -1])
 
-            proj_s = []  # list of projectors into vector space
+            proj_s = []
             for j in range(ir.dim):
-                # Solve X @ R[:, j] = Y @ P, but keep only X
-                RR = R[:, j] @ R[:, j].T  # (u,u)
-                RP = R[:, j] @ P.T  # (u,a)
+                RR = paddle.matmul(R[:, j], R[:, j].t())
+                RP = paddle.matmul(R[:, j], P.t())
 
-                prob = torch.cat([torch.cat([RR, -RP], dim=1), torch.cat([-RP.T, PP], dim=1)], dim=0)
-                eigenvalues, eigenvectors = torch.linalg.eigh(prob)
-                X = eigenvectors[:, eigenvalues < eps][:mul].T  # [solutions, multiplicity]
-                proj_s.append(X.T @ X)
+                prob = paddle.concat(
+                    [
+                        paddle.concat([RR, -RP], axis=1),
+                        paddle.concat([-RP.t(), PP], axis=1),
+                    ],
+                    axis=0,
+                )
 
-                break  # do not check all components because too time expensive
+                eigenvalues, eigenvectors = paddle.linalg.eigh(prob)
+                X = eigenvectors[:, eigenvalues < eps][:mul].t()
+                proj_s.append(paddle.matmul(X.t(), X))
+
+                break
 
             for p in proj_s:
-                assert (p - proj_s[0]).abs().max() < eps, f"found different solutions for irrep {ir}"
+                assert paddle.max(paddle.abs(p - proj_s[0])) < eps, f"found different solutions for irrep {ir}"
 
-            # look for an X such that X.T @ X = Projector
             X, _ = orthonormalize(proj_s[0], eps)
 
             for x in X:
-                C = torch.einsum("u,ui...->i...", x, base_o3)
-                correction = (ir.dim / C.pow(2).sum()) ** 0.5
+                C = paddle.einsum("u,ui...->i...", x, base_o3)
+                correction = (ir.dim / paddle.sum(C.pow(2))) ** 0.5
                 C = correction * C
 
-                outputs.append([((correction * v).item(), p) for v, p in zip(x, paths) if v.abs() > eps])
+                outputs.append([((correction * v).item(), p) for v, p in zip(x, paths) if abs(v) > eps])
                 change_of_basis.append(C)
                 irreps_out.append((1, ir))
 
         dtype, _ = explicit_default_types(None, None)
-        self.register_buffer("change_of_basis", torch.cat(change_of_basis).to(dtype=dtype))
+        self.change_of_basis = paddle.concat(change_of_basis).astype(dtype)
 
         tps = set()
         for vp_list in outputs:
@@ -233,63 +244,49 @@ class ReducedTensorProducts(CodeGenMixin, torch.nn.Module):
                 for op in _get_ops(p):
                     tps.add(op)
 
-        root = torch.nn.Module()
+        self.outputs = outputs
+        self.tps = list(tps)
 
-        tps = list(tps)
-        for i, op in enumerate(tps):
-            tp = TensorProduct(op[0], op[1], op[2], [(0, 0, 0, "uuu", False)])
-            setattr(root, f"tp{i}", tp)
-
-        graph = fx.Graph()
-        tracer = torch.fx.proxy.GraphAppendingTracer(graph)
-        inputs = [fx.Proxy(graph.placeholder(f"x{i}", torch.Tensor), tracer) for i in f0]
+        self.tensor_products = paddle.nn.LayerDict()
+        for i, op in enumerate(self.tps):
+            tp = o3.TensorProduct(op[0], op[1], op[2], [(0, 0, 0, "uuu", False)])
+            self.tensor_products[f"tp{i}"] = tp
 
         self.irreps_in = [irreps[i] for i in f0]
-        self.irreps_out = Irreps(irreps_out).simplify()
+        self.irreps_out = o3.Irreps(irreps_out).simplify()
+        self.f0 = f0
+        self.eps = eps
 
-        values = {}
+    def forward(self, *xs):
+        values = dict()
 
         def evaluate(path):
             if path in values:
                 return values[path]
 
             if isinstance(path, _INPUT):
-                out = inputs[path.tensor]
+                out = xs[path.tensor]
                 if (path.start, path.stop) != (0, self.irreps_in[path.tensor].dim):
-                    out = out.narrow(-1, path.start, path.stop - path.start)
+                    out = paddle.slice(out, [-1], [path.start], [path.stop])
             if isinstance(path, _TP):
-                x1 = evaluate(path.args[0]).node
-                x2 = evaluate(path.args[1]).node
-                out = fx.Proxy(graph.call_module(f"tp{tps.index(path.op)}", (x1, x2)), tracer)
+                x1 = evaluate(path.args[0])
+                x2 = evaluate(path.args[1])
+                tp_idx = self.tps.index(path.op)
+                out = self.tensor_products[f"tp{tp_idx}"](x1, x2)
             values[path] = out
             return out
 
         outs = []
-        for vp_list in outputs:
+        for vp_list in self.outputs:
             v, p = vp_list[0]
             out = evaluate(p)
-            if abs(v - 1.0) > eps:
+            if abs(v - 1.0) > self.eps:
                 out = v * out
             for v, p in vp_list[1:]:
                 t = evaluate(p)
-                if abs(v - 1.0) > eps:
+                if abs(v - 1.0) > self.eps:
                     t = v * t
                 out = out + t
             outs.append(out)
 
-        out = torch.cat(outs, dim=-1)
-        graph.output(out.node)
-        graphmod = fx.GraphModule(root, graph, "main")
-
-        self._codegen_register({"main": graphmod})
-
-    def __repr__(self) -> str:
-        return (
-            f"ReducedTensorProducts(\n"
-            f"    in: {' times '.join(map(repr, self.irreps_in))}\n"
-            f"    out: {self.irreps_out}\n"
-            ")"
-        )
-
-    def forward(self, *xs):
-        return self.main(*xs)
+        return paddle.concat(outs, axis=-1)

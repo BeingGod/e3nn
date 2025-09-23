@@ -1,19 +1,18 @@
-import torch
+import paddle
 
 from e3nn import o3
 from e3nn.math import normalize2mom
-from e3nn.util.jit import compile_mode
+from e3nn.util.paddle_utils import *  # noqa
 
 
-@compile_mode("script")
-class S2Activation(torch.nn.Module):
-    r"""Apply non linearity on the signal on the sphere
+class S2Activation(paddle.nn.Layer):
+    """Apply non linearity on the signal on the sphere
 
     | Maps to the sphere, apply the non linearity point wise and project back.
     | The signal on the sphere is a quasiregular representation of :math:`O(3)` and we can apply a pointwise operation on
     | these representations.
 
-    .. math:: \{A^l\}_l \mapsto \{\int \phi(\sum_l A^l \cdot Y^l(x)) Y^j(x) dx\}_j
+    .. math:: \\{A^l\\}_l \\mapsto \\{\\int \\phi(\\sum_l A^l \\cdot Y^l(x)) Y^j(x) dx\\}_j
 
     Parameters
     ----------
@@ -21,7 +20,7 @@ class S2Activation(torch.nn.Module):
         input representation of the form ``[(1, (l, p_val * (p_arg)^l)) for l in [0, ..., lmax]]``
 
     act : function
-        activation function :math:`\phi`
+        activation function :math:`\\phi`
 
     res : int
         resolution of the grid on the sphere (the higher the more accurate)
@@ -37,14 +36,19 @@ class S2Activation(torch.nn.Module):
     Examples
     --------
     >>> from e3nn import io
-    >>> m = S2Activation(io.SphericalTensor(5, p_val=+1, p_arg=-1), torch.tanh, 100)
+    >>> m = S2Activation(io.SphericalTensor(5, p_val=+1, p_arg=-1), paddle.tanh, 100)
     """
 
     def __init__(
-        self, irreps: o3.Irreps, act, res, normalization: str = "component", lmax_out=None, random_rot: bool = False
-    ) -> None:
+        self,
+        irreps: o3.Irreps,
+        act,
+        res,
+        normalization="component",
+        lmax_out=None,
+        random_rot=False,
+    ):
         super().__init__()
-
         irreps = o3.Irreps(irreps).simplify()
         _, (_, p_val) = irreps[0]
         _, (lmax, _) = irreps[-1]
@@ -57,58 +61,48 @@ class S2Activation(torch.nn.Module):
         else:
             assert False, "the parity of the input is not well defined"
         self.irreps_in = irreps
-        # the input transforms as : A_l ---> p_val * (p_arg)^l * A_l
-        # the sphere signal transforms as : f(r) ---> p_val * f(p_arg * r)
         if lmax_out is None:
             lmax_out = lmax
-
         if p_val in (0, +1):
             self.irreps_out = o3.Irreps([(1, (l, p_val * p_arg**l)) for l in range(lmax_out + 1)])
         if p_val == -1:
-            x = torch.linspace(0, 10, 256)
+            x = paddle.linspace(start=0, stop=10, num=256)
             a1, a2 = act(x), act(-x)
-            if (a1 - a2).abs().max() < a1.abs().max() * 1e-10:
-                # p_act = 1
+            if (a1 - a2).abs().max_func() < a1.abs().max_func() * 1e-10:
                 self.irreps_out = o3.Irreps([(1, (l, p_arg**l)) for l in range(lmax_out + 1)])
-            elif (a1 + a2).abs().max() < a1.abs().max() * 1e-10:
-                # p_act = -1
+            elif (a1 + a2).abs().max_func() < a1.abs().max_func() * 1e-10:
                 self.irreps_out = o3.Irreps([(1, (l, -(p_arg**l))) for l in range(lmax_out + 1)])
             else:
-                # p_act = 0
                 raise ValueError("warning! the parity is violated")
-
         self.to_s2 = o3.ToS2Grid(lmax, res, normalization=normalization)
         self.from_s2 = o3.FromS2Grid(res, lmax_out, normalization=normalization, lmax_in=lmax)
         self.act = normalize2mom(act)
         self.random_rot = random_rot
 
-    def __repr__(self) -> str:
+    def __repr__(self):
         return f"{self.__class__.__name__} ({self.irreps_in} -> {self.irreps_out})"
 
     def forward(self, features):
-        r"""evaluate
+        """evaluate
 
         Parameters
         ----------
 
-        features : `torch.Tensor`
-            tensor :math:`\{A^l\}_l` of shape ``(..., self.irreps_in.dim)``
+        features : `paddle.Tensor`
+            tensor :math:`\\{A^l\\}_l` of shape ``(..., self.irreps_in.dim)``
 
         Returns
         -------
-        `torch.Tensor`
+        `paddle.Tensor`
             tensor of shape ``(..., self.irreps_out.dim)``
         """
-        assert features.shape[-1] == self.irreps_in.dim
-
+        assert tuple(features.shape)[-1] == self.irreps_in.dim
         if self.random_rot:
-            abc = o3.rand_angles(dtype=features.dtype, device=features.device)
-            features = torch.einsum("ij,...j->...i", self.irreps_in.D_from_angles(*abc), features)
-
-        features = self.to_s2(features)  # [..., beta, alpha]
+            abc = o3.rand_angles(dtype=features.dtype, device=features.place)
+            features = paddle.einsum("ij,...j->...i", self.irreps_in.D_from_angles(*abc), features)
+        features = self.to_s2(features)
         features = self.act(features)
         features = self.from_s2(features)
-
         if self.random_rot:
-            features = torch.einsum("ij,...j->...i", self.irreps_out.D_from_angles(*abc).T, features)
+            features = paddle.einsum("ij,...j->...i", self.irreps_out.D_from_angles(*abc).T, features)
         return features

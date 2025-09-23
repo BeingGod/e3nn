@@ -1,4 +1,4 @@
-r"""Allows for clean lookup of Irreducible representations of :math:`O(3)`
+"""Allows for clean lookup of Irreducible representations of :math:`O(3)`
 
 Examples
 --------
@@ -16,8 +16,8 @@ True
 from .._irreps import Irrep
 
 
-def __getattr__(name: str) -> Irrep:
-    r"""Creates an Irreps obeject by reflection
+def __getattr__(name: str):
+    """Creates an Irreps obeject by reflection
 
     Parameters
     ----------
@@ -29,11 +29,9 @@ def __getattr__(name: str) -> Irrep:
     `e3nn.o3.Irrep`
         irreducible representation of :math:`O(3)`
     """
-
     prefix, *ir = name
     if prefix != "l" or not ir:
         raise AttributeError(f"'e3nn.o3.irrep' module has no attribute '{name}'")
-
     try:
         return Irrep("".join(ir))
     except (ValueError, AssertionError):

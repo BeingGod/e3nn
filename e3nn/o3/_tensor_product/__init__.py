@@ -1,6 +1,9 @@
 from ._instruction import Instruction
+from ._sub import ElementwiseTensorProduct
+from ._sub import FullTensorProduct
+from ._sub import FullyConnectedTensorProduct
+from ._sub import TensorSquare
 from ._tensor_product import TensorProduct
-from ._sub import ElementwiseTensorProduct, FullTensorProduct, FullyConnectedTensorProduct, TensorSquare
 
 __all__ = [
     "Instruction",

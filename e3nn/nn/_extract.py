@@ -1,18 +1,10 @@
-from typing import Tuple
+import paddle
 
-import torch
-from torch import fx
-
-from e3nn.util.codegen import CodeGenMixin
-from e3nn.util.jit import compile_mode
-from e3nn.o3._irreps import Irrep, Irreps
+from e3nn import o3
 
 
-@compile_mode("script")
-class Extract(CodeGenMixin, torch.nn.Module):
-    # pylint: disable=abstract-method
-
-    def __init__(self, irreps_in, irreps_outs, instructions, squeeze_out: bool = False) -> None:
+class Extract(paddle.nn.Layer):
+    def __init__(self, irreps_in, irreps_outs, instructions, squeeze_out: bool = False):
         r"""Extract sub sets of irreps
 
         Parameters
@@ -27,61 +19,47 @@ class Extract(CodeGenMixin, torch.nn.Module):
             list of tuples, one per output continaing each ``len(irreps_outs[i])`` int
 
         squeeze_out : bool, default False
-            if ``squeeze_out`` and only one output exists, a ``torch.Tensor`` will be returned instead of a
-            ``Tuple[torch.Tensor]``
-
-
-        Examples
-        --------
-
-        >>> c = Extract('1e + 0e + 0e', ['0e', '0e'], [(1,), (2,)])
-        >>> c(torch.tensor([0.0, 0.0, 0.0, 1.0, 2.0]))
-        (tensor([1.]), tensor([2.]))
+            if ``squeeze_out`` and only one output exists, a ``paddle.Tensor`` will be returned instead of a
+            ``Tuple[paddle.Tensor]``
         """
         super().__init__()
-        self.irreps_in = Irreps(irreps_in)
-        self.irreps_outs = tuple(Irreps(irreps) for irreps in irreps_outs)
+        self.irreps_in = o3.Irreps(irreps_in)
+        self.irreps_outs = tuple(o3.Irreps(irreps) for irreps in irreps_outs)
         self.instructions = instructions
+        self.squeeze_out = squeeze_out
 
         assert len(self.irreps_outs) == len(self.instructions)
         for irreps_out, ins in zip(self.irreps_outs, self.instructions):
             assert len(irreps_out) == len(ins)
 
-        # == generate code ==
-        graph = fx.Graph()
-        x = fx.Proxy(graph.placeholder("x", torch.Tensor))
-        torch._assert(x.shape[-1] == self.irreps_in.dim, "invalid input shape")
+    def forward(self, x):
+        assert x.shape[-1] == self.irreps_in.dim, "invalid input shape"
 
         out = []
         for irreps in self.irreps_outs:
-            out.append(x.new_zeros(x.shape[:-1] + (irreps.dim,)))
-
+            out.append(paddle.zeros(list(x.shape[:-1]) + [irreps.dim], dtype=x.dtype))
         for i, (irreps_out, ins) in enumerate(zip(self.irreps_outs, self.instructions)):
             if ins == tuple(range(len(self.irreps_in))):
-                out[i].copy_(x)
+                out[i] = paddle.assign(x)
             else:
                 for s_out, i_in in zip(irreps_out.slices(), ins):
                     i_start = self.irreps_in[:i_in].dim
                     i_len = self.irreps_in[i_in].dim
-                    out[i].narrow(-1, s_out.start, s_out.stop - s_out.start).copy_(x.narrow(-1, i_start, i_len))
+                    x_slice = x.slice([-1], [i_start], [i_start + i_len])
+                    if len(out[i].shape) == 1:
+                        out[i][s_out.start : s_out.stop] = x_slice
+                    else:
+                        idx = [slice(None)] * (len(out[i].shape) - 1)
+                        idx.append(slice(s_out.start, s_out.stop))
+                        out[i][tuple(idx)] = x_slice
 
-        out = tuple(e.node for e in out)
-        if squeeze_out and len(out) == 1:
-            graph.output(out[0], torch.Tensor)
-        else:
-            graph.output(out, Tuple[(torch.Tensor,) * len(self.irreps_outs)])
-
-        self._codegen_register({"_compiled_forward": fx.GraphModule({}, graph)})
-
-    def forward(self, x: torch.Tensor):
-        return self._compiled_forward(x)
+        if self.squeeze_out and len(out) == 1:
+            return out[0]
+        return tuple(out)
 
 
-@compile_mode("script")
 class ExtractIr(Extract):
-    # pylint: disable=abstract-method
-
-    def __init__(self, irreps_in, ir) -> None:
+    def __init__(self, irreps_in, ir):
         r"""Extract ``ir`` from irreps
 
         Parameters
@@ -92,9 +70,9 @@ class ExtractIr(Extract):
         ir : `e3nn.o3.Irrep`
             representation to extract
         """
-        ir = Irrep(ir)
-        irreps_in = Irreps(irreps_in)
-        self.irreps_out = Irreps([mul_ir for mul_ir in irreps_in if mul_ir.ir == ir])
+        ir = o3.Irrep(ir)
+        irreps_in = o3.Irreps(irreps_in)
+        self.irreps_out = o3.Irreps([mul_ir for mul_ir in irreps_in if mul_ir.ir == ir])
         instructions = [tuple(i for i, mul_ir in enumerate(irreps_in) if mul_ir.ir == ir)]
 
         super().__init__(irreps_in, [self.irreps_out], instructions, squeeze_out=True)

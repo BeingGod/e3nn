@@ -1,17 +1,18 @@
-import torch
+import paddle
+import pytest
 
 from e3nn import o3
-from e3nn.util.jit import script
+from e3nn.util.paddle_utils import dim2perm
 
 
 def test_xyz(float_tolerance) -> None:
     R = o3.rand_matrix(10)
-    assert (R @ R.transpose(-1, -2) - torch.eye(3)).abs().max() < float_tolerance
+    assert (R @ R.transpose(perm=dim2perm(R.ndim, -1, -2)) - paddle.eye(3)).abs().max() < float_tolerance
 
     a, b, c = o3.matrix_to_angles(R)
     pos1 = o3.angles_to_xyz(a, b)
-    pos2 = R @ torch.tensor([0, 1.0, 0])
-    assert torch.allclose(pos1, pos2, atol=float_tolerance)
+    pos2 = R @ paddle.to_tensor([0, 1.0, 0])
+    assert paddle.allclose(pos1, pos2, atol=float_tolerance)
 
     a2, b2 = o3.xyz_to_angles(pos2)
     assert (a - a2).abs().max() < float_tolerance
@@ -96,37 +97,55 @@ def test_inverse_angles(float_tolerance) -> None:
 
 def test_rand_axis_angle() -> None:
     axis, angle = o3.rand_axis_angle(1_000_000)
-    x = o3.axis_angle_to_matrix(axis, angle) @ torch.tensor([0.2, 0.5, 0.3])
+    x = o3.axis_angle_to_matrix(axis, angle) @ paddle.to_tensor([0.2, 0.5, 0.3])
     assert x[:, 0].mean().max() < 0.005
     assert x[:, 1].mean().max() < 0.005
     assert x[:, 2].mean().max() < 0.005
 
 
 def test_matrix_xyz(float_tolerance) -> None:
-    x = torch.randn(100, 3)
+    x = paddle.randn([100, 3])
 
-    y = torch.einsum("zij,zj->zi", o3.matrix_x(torch.randn(100)), x)
+    y = paddle.einsum(
+        "zij,zj->zi",
+        o3.matrix_x(
+            paddle.randn(
+                [
+                    100,
+                ]
+            )
+        ),
+        x,
+    )
     assert (x[:, 0] - y[:, 0]).abs().max() < float_tolerance
 
-    y = torch.einsum("zij,zj->zi", o3.matrix_y(torch.randn(100)), x)
+    y = paddle.einsum(
+        "zij,zj->zi",
+        o3.matrix_y(
+            paddle.randn(
+                [
+                    100,
+                ]
+            )
+        ),
+        x,
+    )
     assert (x[:, 1] - y[:, 1]).abs().max() < float_tolerance
 
-    y = torch.einsum("zij,zj->zi", o3.matrix_z(torch.randn(100)), x)
+    y = paddle.einsum(
+        "zij,zj->zi",
+        o3.matrix_z(
+            paddle.randn(
+                [
+                    100,
+                ]
+            )
+        ),
+        x,
+    )
     assert (x[:, 2] - y[:, 2]).abs().max() < float_tolerance
 
 
+@pytest.mark.skip(reason="paddle not support compile.")
 def test_script():
-    pos = torch.tensor([[0.0, 1.0, 1.0]])
-    angles = o3.xyz_to_angles(pos)
-    print(angles)
-
-    class XYZAngles(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-
-        def forward(self, xyz):
-            return o3.xyz_to_angles(xyz)
-
-    mod = XYZAngles()
-    scripted = script(mod)
-    torch.testing.assert_close(mod(pos), scripted(pos))
+    pass
